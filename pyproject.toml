@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dataflatform-service"
+version = "0.1.0"
+description = "멀티모달 데이터 통합 플랫폼 — 백엔드 API(검색·자산 상세·다운로드·관리자 관계 검토 serving)"
+requires-python = ">=3.11"
+dependencies = [
+    # ⚠️ 코어(src.*)는 여기 핀하지 않는다 — README §2 대로 별도 설치:
+    #   설치형: pip install "meta-extract @ git+https://github.com/OWNER/dataplatform-core.git@<tag>"
+    #   참조형: pip install -e /path/to/dataplatform-core
+    # (PyPI 미배포라 이름 핀 시 설치 실패·두 방식 유연성 위해 제외. psycopg·opensearch-py·
+    #  sentence-transformers 등 런타임 의존은 코어(meta-extract)가 전이 제공한다.)
+    # 백엔드 서버 직접 의존만 명시:
+    "fastapi",
+    "uvicorn",
+    "python-dotenv",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["service*"]
+
+[tool.ruff]
+line-length = 100
+lint.ignore = ["E501"]  # 코어 레포 관례와 동일(한국어 주석 다수·E501 무시)
+
+[tool.ruff.lint.isort]
+known-first-party = ["service", "src"]  # 코어(src)·백엔드(service) 모두 first-party 정렬
