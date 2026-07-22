@@ -6,13 +6,12 @@ os.environ.setdefault("PORTAL_AUTH_DISABLED", "1")  # dev bypass(anonymous=publi
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from src.app import portal_api  # noqa: E402  (app 진입점 재export 심)
-from service.api import _infra, routes_admin, routes_assets  # noqa: E402
+from service.api import app, _infra, routes_admin, routes_assets  # noqa: E402  (레포 분리: 코어 src.app 제거·백엔드 app 직접 사용)
 
 
 class HistoryEndpointsTest(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(portal_api.app)
+        self.client = TestClient(app)
 
     def test_lineage_endpoint(self):
         with mock.patch.object(routes_admin, "query_asset_lineage",
@@ -405,7 +404,7 @@ class SnapshotBucketApiTest(unittest.TestCase):
     /admin/assets/{id} 배선(FR-103/201/301). 전부 additive·기존 동작 불변."""
 
     def setUp(self):
-        self.client = TestClient(portal_api.app)
+        self.client = TestClient(app)
 
     def test_assets_list_snapshot_bucket_passthrough(self):
         # snapshot_bucket·relation_scope 가 query_assets 로 전달되는지 배선 검증(FR-103).
@@ -509,7 +508,7 @@ class SnapshotBucketApiTest(unittest.TestCase):
         with mock.patch.dict(os.environ,
                              {"PORTAL_AUTH_DISABLED": "0", "PORTAL_JWT_SECRET": "test-secret"},
                              clear=False):
-            client = TestClient(portal_api.app)
+            client = TestClient(app)
             r = client.get("/admin/assets/a1")
         _reset_verifier_for_tests()
         self.assertEqual(r.status_code, 401)

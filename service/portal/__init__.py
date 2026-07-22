@@ -5,7 +5,7 @@ HTTP 백엔드를 올리는 조회 계층이다. 흐름은 순수 로직(검색 
 conn 기반 조회 서비스(상세·묶음 수집/zip)로 나뉜다.
 
 의존성
-    FastAPI·psycopg 등 **무거운 의존성**은 진입점(``src/app/portal_api.py``)과 conn 기반
+    FastAPI·psycopg 등 **무거운 의존성**은 진입점(``service/api`` 의 app)과 conn 기반
     조회 모듈에만 두고, ``from service.portal import X`` 는 ``__getattr__`` 로 **지연 import**
     한다(순환 참조·기동 비용 완화). ``src/relations/__init__.py`` 와 동형.
 

@@ -1,14 +1,15 @@
 """검색 모달리티 단일 출처(T301·D5·P2-29) 단위 테스트 — DB·네트워크 없음.
 
-리뷰 P2-29: 유효 모달리티 튜플과 CSV 파싱이 3진입점(portal_api·run_search·sample_search_api)에
-복제돼 있었다. 이 테스트는 (a) 공유 파서 ``parse_modalities_csv`` 의 순수 파싱 계약,
-(b) 유효값 튜플이 코드에 **1벌만** 존재(3진입점이 공유 상수 참조), (c) sample 진입점의
-미지 모달리티 응답 형태(200 + {"error"}) 보존을 봉인한다.
+리뷰 P2-29: 유효 모달리티 튜플과 CSV 파싱이 여러 진입점에 복제돼 있던 것을 코어
+``src.config.search_modalities`` **단일 출처**로 모았다. 이 백엔드 테스트는 (a) 공유 파서
+``parse_modalities_csv`` 의 순수 파싱 계약, (b) 백엔드 검색 진입점(``service.api.routes_search``)이
+자체 튜플을 복제하지 않고 코어 공유 상수를 **참조**함(객체 동일성)을 봉인한다.
+
+※ 레포 분리: 코어/파이프라인 진입점(run_search 등)의 동일성 및 ``src/`` 전역 단일출처 grep 가드는
+  각 레포가 소유한다(백엔드 트리엔 ``src/`` 가 없다 — 코어는 site-packages 로 설치). 여기선 백엔드 몫만.
 """
 from __future__ import annotations
 
-import pathlib
-import re
 import unittest
 
 from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modalities_csv
@@ -45,26 +46,15 @@ class TestValidModalitiesSingleSource(unittest.TestCase):
         self.assertEqual(VALID_SEARCH_MODALITIES, ("text", "image", "video", "audio"))
 
     def test_entrypoints_reference_shared_constant(self) -> None:
-        # 검색 진입점 모듈이 자체 튜플을 복제하지 않고 공유 상수를 참조(객체 동일성).
-        # 069 T407: 3번째 진입점 sample_search_api 는 삭제됨(디버그 3종 portal /search 로 이관).
-        import src.app.run_search as run_search
+        # 백엔드 검색 진입점(routes_search)이 자체 튜플을 복제하지 않고 코어 공유 상수를 참조(객체 동일성).
+        # (레포 분리: run_search 등 코어·파이프라인 진입점의 동일성 검증은 각 레포가 소유 — 여기선 백엔드 몫만.)
         from service.api import routes_search as portal
 
         self.assertIs(portal.VALID_SEARCH_MODALITIES, VALID_SEARCH_MODALITIES)
-        self.assertIs(run_search.VALID_SEARCH_MODALITIES, VALID_SEARCH_MODALITIES)
 
-    def test_valid_tuple_literal_defined_once(self) -> None:
-        # grep 계약: `= ("text","image","video","audio")` 튜플 리터럴이 src/ 전체에서 단 1곳만.
-        src_root = pathlib.Path(__file__).resolve().parents[1] / "src"
-        pattern = re.compile(
-            r'=\s*\(\s*"text"\s*,\s*"image"\s*,\s*"video"\s*,\s*"audio"\s*,?\s*\)'
-        )
-        hits = sorted(
-            p.name
-            for p in src_root.rglob("*.py")
-            if pattern.search(p.read_text(encoding="utf-8"))
-        )
-        self.assertEqual(hits, ["search_modalities.py"])
+    # (레포 분리로 제거) test_valid_tuple_literal_defined_once — `= ("text","image","video","audio")`
+    #   리터럴이 ``src/`` 전역에서 1곳뿐인지 검사하는 grep 가드는 **코어 단일출처 불변식**이라 코어 레포가
+    #   소유한다. 백엔드 트리엔 ``src/`` 가 없어(코어는 설치본) 항상 빈 결과 → 여기서 검증하지 않는다.
 
 
 # 069 T407: TestSampleSearchModalityContract(sample 미지 모달리티 200+{"error"} 보존)를 제거했다 —

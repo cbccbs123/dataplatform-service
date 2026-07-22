@@ -5,13 +5,11 @@
 ``__init__`` 만 ``app`` 을 소유하고, lifespan·접근이력 미들웨어·OS 예외핸들러를 ``_infra`` 에서 가져와
 배선하며, 4개 라우터를 **원래 등록 순서**로 include 한다.
 
-하위호환: 진입점·테스트는 ``from service.api import app`` 을 쓰는데, ``portal_api.py`` 가 이
-패키지의 ``app`` 을 재export 하는 얇은 심으로 남는다.
+진입점·테스트는 ``from service.api import app`` 을 쓴다(구 단일 ``portal_api.py`` 심은 레포 분리로 제거됨).
 """
 
 from __future__ import annotations
 
-import os
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException

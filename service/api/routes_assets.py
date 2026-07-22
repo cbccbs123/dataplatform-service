@@ -258,8 +258,9 @@ def bundle(
     """seed 자산 기준 관계 ego-network(seed + 1-hop active 이웃)를 zip 으로 묶어 내려준다(FR-008).
 
     seed 는 ``resolve_download_target`` 로 게이팅한다 — None(없음/의료/비registered) → 404.
-    한계(MVP): 이웃 자산의 의료 필터는 미적용(현재 medical 자산 부재·plan §0.1) — 후속(013/RBAC)에서
-    ``collect_bundle_assets`` 수준에 추가.
+    이웃 자산도 ``collect_bundle_assets`` 의 SQL(``domain_label <> 'medical'`` + registered)로 의료·비registered
+    를 제외한다(PHI 이중 차단·download.py ``_BUNDLE_PATHS_SQL``). NULL domain 은 SQL 특성상 함께 제외되나,
+    registered 자산은 'general' 이 부여돼 실무상 과다배제 영향은 없다(안전 방향).
     """
 
     def _work(conn: Any) -> list[dict[str, Any]] | None:

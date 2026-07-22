@@ -30,8 +30,8 @@ from typing import Any
 from src.config.filename_util import basename_of
 
 # 아카이브 asset_id 프리픽스(``{asset_id}__``) 역패턴 — 표시용 파일명서 벗긴다(065 T605).
-# 정본은 ``src/ingest/archiver.py::_ASSET_ID_PREFIX`` 이나, portal→ingest 계층 역참조를 피하려고
-# 같은 UUIDv7 패턴을 작은 사본으로 둔다(포맷 변경 시 동기).
+# 정본은 파이프라인 레포 ``processing/ingest/archiver.py::_ASSET_ID_PREFIX`` 다. 레포 분리로 백엔드는
+# 크로스레포 import 를 하지 않으므로 같은 UUIDv7 패턴을 작은 사본으로 둔다(포맷 변경 시 양쪽 동기).
 _ASSET_ID_PREFIX = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}__"
 )
