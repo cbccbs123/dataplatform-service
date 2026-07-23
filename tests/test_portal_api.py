@@ -123,9 +123,9 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(body["query"], "회식")
         # results 는 모달리티별 dict — text 섹션 안에서만 랭킹(a1>a2>a3).
         self.assertEqual([r["asset_id"] for r in body["results"]["text"]], ["a1", "a2", "a3"])
-        # image 섹션은 의료 1건뿐이라 배제 후 빈 리스트(섹션 키는 존재).
-        self.assertEqual(body["results"]["image"], [])
-        self.assertEqual(body["meta"]["counts"], {"text": 3, "image": 0})
+        # 2026-07-23: 도메인 제외 전면 제거 — image 섹션의 의료 자산(med1)도 노출된다.
+        self.assertEqual([r["asset_id"] for r in body["results"]["image"]], ["med1"])
+        self.assertEqual(body["meta"]["counts"], {"text": 3, "image": 1})
         self.assertEqual(body["meta"]["size"], 10)
 
     @patch("service.api.routes_search.search_hybrid")
@@ -212,21 +212,21 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(rows[1]["topic_pairs"], [])  # 짝 없는 행 → [] 폴백(하위호환)
 
     @patch("service.api.routes_search.search_hybrid")
-    def test_search_excludes_medical_per_bucket(self, mock_search) -> None:
-        # FR-014: domain_label='medical' 은 해당 버킷에서 배제된다(image 섹션에서 med1 사라짐).
+    def test_search_includes_medical_per_bucket(self, mock_search) -> None:
+        # 2026-07-23: 도메인 제외 전면 제거 — 의료 자산(med1)도 해당 버킷에 노출된다.
         mock_search.return_value = _fake_search_result()
         body = self.client.get("/search", params={"q": "회식", "size": 10}).json()
         all_ids = [r["asset_id"] for rows in body["results"].values() for r in rows]
-        self.assertNotIn("med1", all_ids)
+        self.assertIn("med1", all_ids)
 
     @patch("service.api.routes_search.search_hybrid")
     def test_search_passes_exclude_and_size_to_group(self, mock_search) -> None:
-        # 배선: group_ranked 가 exclude_domains={'medical'} · limit_per_modality=size 로 호출되는지.
+        # 배선: group_ranked 가 exclude_domains(2026-07-23 빈집합) · limit_per_modality=size 로 호출되는지.
         mock_search.return_value = _fake_search_result()
         with patch("service.api.routes_search.group_ranked", return_value={}) as mock_group:
             self.client.get("/search", params={"q": "x", "size": 7})
         self.assertEqual(
-            mock_group.call_args.kwargs["exclude_domains"], frozenset({"medical"})
+            mock_group.call_args.kwargs["exclude_domains"], frozenset()
         )
         self.assertEqual(mock_group.call_args.kwargs["limit_per_modality"], 7)
 
@@ -362,24 +362,24 @@ class TestSearch(unittest.TestCase):
 
     @patch("service.api.routes_search.search_hybrid")
     def test_compact_true_returns_flat_ranking(self, mock_search) -> None:
-        # compact=true → {query, 건수, 결과} 축약 뷰(전 모달리티 합쳐 점수순·의료 배제 후).
+        # compact=true → {query, 건수, 결과} 축약 뷰(전 모달리티 합쳐 점수순). 2026-07-23: 도메인 제외 전면 제거.
         mock_search.return_value = _fake_search_result()
         body = self.client.get("/search", params={"q": "회식", "compact": "true"}).json()
         self.assertEqual(body["query"], "회식")
         self.assertIn("건수", body)
         self.assertIn("결과", body)
-        # 의료(image med1)는 group_ranked 에서 배제 → text 3건만.
-        self.assertEqual(body["건수"], 3)
+        # 의료(image med1·0.95)도 이제 포함 → 4건, 점수순 med1>a1>a2>a3.
+        self.assertEqual(body["건수"], 4)
         rows = body["결과"]
-        self.assertEqual([r["순위"] for r in rows], [1, 2, 3])
-        # 점수 내림차순(a1 0.9 > a2 0.8 > a3 0.7), 각 행에 모달리티·점수·파일명·요약.
-        self.assertEqual([r["파일명"] for r in rows], ["a1.txt", "a2.txt", "a3.txt"])
+        self.assertEqual([r["순위"] for r in rows], [1, 2, 3, 4])
+        # 점수 내림차순(med1 0.95 > a1 0.9 > a2 0.8 > a3 0.7), 각 행에 모달리티·점수·파일명·요약.
+        self.assertEqual([r["파일명"] for r in rows], ["m.png", "a1.txt", "a2.txt", "a3.txt"])
+        self.assertEqual([r["모달리티"] for r in rows], ["image", "text", "text", "text"])
         for r in rows:
-            self.assertEqual(r["모달리티"], "text")
             self.assertIn("점수", r)
             self.assertIn("요약", r)
-        # 의료 자산 파일명이 축약 뷰로 새지 않는다(헌법 10조·FR-014).
-        self.assertNotIn("m.png", [r["파일명"] for r in rows])
+        # 의료 자산도 이제 축약 뷰에 노출된다(도메인 제외 없음).
+        self.assertIn("m.png", [r["파일명"] for r in rows])
 
     @patch("service.api.routes_search.fetch_active_relations_for_asset")
     @patch("service.api.routes_search.search_hybrid")

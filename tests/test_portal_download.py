@@ -85,14 +85,14 @@ class TestResolveDownloadTarget(unittest.TestCase):
 
         self.assertIsNone(resolve_download_target(conn, asset_id="A1"))
 
-    def test_medical_returns_none(self) -> None:
-        # 의료 자산 배제(FR-014) → None.
+    def test_medical_returns_target(self) -> None:
+        # 2026-07-23: 도메인 제외 전면 제거 — 의료 자산도 다운로드 타깃이 해소된다(None 아님).
         row = dict(self._ROW)
         row["domain_label"] = "medical"
         conn, _ = _conn_one(row)
         from service.portal.download import resolve_download_target
 
-        self.assertIsNone(resolve_download_target(conn, asset_id="A1"))
+        self.assertIsNotNone(resolve_download_target(conn, asset_id="A1"))
 
 
 class TestCollectBundleAssets(unittest.TestCase):
@@ -168,7 +168,7 @@ class TestCollectBundleAssets(unittest.TestCase):
 
     @patch("service.portal.download.fetch_active_relations_for_asset")
     def test_non_registered_neighbor_excluded_by_bundle_sql(self, mock_rel) -> None:
-        # SQL 게이트: 비registered·의료 이웃은 path 조회에서 제외된다(042 FR-007).
+        # SQL 게이트: 비registered 이웃은 path 조회에서 제외된다(042 FR-007). 2026-07-23: 도메인 제외 전면 제거.
         mock_rel.return_value = [_rel("N_OK", 0.9), _rel("N_FAIL", 0.8)]
         path_rows = [
             {"asset_id": "SEED", "fs_path": "/d/seed.txt"},
@@ -180,7 +180,7 @@ class TestCollectBundleAssets(unittest.TestCase):
         collect_bundle_assets(conn, seed_asset_id="SEED")
         sql = cur.execute.call_args[0][0]
         self.assertIn("registered", sql)
-        self.assertIn("medical", sql)
+        self.assertNotIn("medical", sql)
 
     @patch("service.portal.download.fetch_active_relations_for_asset")
     def test_determinism_same_input_same_output(self, mock_rel) -> None:

@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 _BYTES_PREFIX = "bytes="
 
-# 다운로드 노출 게이트(상세와 동일): registered·비의료만 노출. 그 외/없음은 API 가 404.
+# 다운로드 노출 게이트(상세와 동일): registered 만 노출. 그 외/없음은 API 가 404. 도메인 제외 없음(2026-07-23).
 _DOWNLOAD_TARGET_SQL = """
 SELECT asset_id, fs_path, fs_uri, file_size, modality, domain_label, status
 FROM asset
@@ -43,13 +43,12 @@ LIMIT 1
 """
 
 # 묶음 이웃 경로 조회 (010 P1 · 042 FR-007).
-# seed 는 ``resolve_download_target`` 로 registered·비의료 게이트됨 — 이웃만 SQL 로 재필터.
-# 비registered·medical 이웃은 fs_path 없이 묶음에서 제외(의료 seed 는 상위 404).
+# seed 는 ``resolve_download_target`` 로 registered 게이트됨 — 이웃만 SQL 로 재필터.
+# 비registered 이웃은 fs_path 없이 묶음에서 제외. 도메인 제외 없음(2026-07-23 전면 제거).
 _BUNDLE_PATHS_SQL = """
 SELECT asset_id, fs_path FROM asset
 WHERE asset_id = ANY(%s)
   AND status = 'registered'
-  AND domain_label <> 'medical'
 """
 
 
@@ -116,8 +115,9 @@ def resolve_download_target(
     """``asset_id`` 의 단일 다운로드 타깃을 해소한다(노출 게이트 포함, plan D-4).
 
     Returns:
-        registered·비의료면 ``{"asset_id","fs_path","fs_uri","file_size","modality","file_name"}``
-        (``file_name`` = ``fs_path`` basename). 행 없음/비registered/의료(FR-014) → ``None`` (API 404).
+        registered 면 ``{"asset_id","fs_path","fs_uri","file_size","modality","file_name"}``
+        (``file_name`` = ``fs_path`` basename). 행 없음/비registered → ``None`` (API 404).
+        (2026-07-23: 도메인 제외 전면 제거 — 의료 게이트 삭제.)
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_DOWNLOAD_TARGET_SQL, (asset_id,))
@@ -126,8 +126,6 @@ def resolve_download_target(
     if row is None:
         return None
     if row["status"] != "registered":
-        return None
-    if row["domain_label"] == "medical":
         return None
 
     fs_path = row["fs_path"]

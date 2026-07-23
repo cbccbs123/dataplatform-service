@@ -55,13 +55,13 @@ class AssetStatsShapeTest(unittest.TestCase):
         self.assertIsNone(out["by_file_ext"][2]["file_ext"])  # 확장자 없음(NULL)
         self.assertEqual(out["by_date"][0], {"date": ts.isoformat(), "count": 10})
 
-    def test_excludes_medical_in_all_queries(self):
+    def test_no_domain_exclusion_in_queries(self):
+        # 2026-07-23: 도메인 제외 전면 제거 — 6개 SQL 어디에도 medical 배제가 없다.
         conn = _Conn([(0,), [], [], [], [], []])
         asset_stats(conn)
-        # 6개 SQL 모두 의료 제외 WHERE 절을 포함해야 함(total·status·modality·domain·file_ext·date)
         self.assertEqual(len(conn._cur.calls), 6)
         for sql, _params in conn._cur.calls:
-            self.assertIn("domain_label <> 'medical'", sql)
+            self.assertNotIn("medical", sql)
 
     def test_deterministic_order_sql(self):
         conn = _Conn([(0,), [], [], [], [], []])
@@ -83,7 +83,7 @@ class AssetStatsShapeTest(unittest.TestCase):
         for sql, params in conn._cur.calls:
             self.assertIn("created_at >= %s", sql)
             self.assertIn("created_at < %s", sql)
-            self.assertIn("domain_label <> 'medical'", sql)
+            self.assertNotIn("medical", sql)  # 2026-07-23: 도메인 제외 전면 제거
             self.assertEqual(params, [dt1, dt2])
 
 
@@ -140,7 +140,7 @@ class AssetStatsSnapshotBucketsTest(unittest.TestCase):
         self.assertEqual(len(conn._cur.calls), 7)
         filter_sql, filter_params = conn._cur.calls[6]
         self.assertEqual(filter_sql.count("FILTER"), 5)  # 5버킷 count
-        self.assertIn("domain_label <> 'medical'", filter_sql)  # 의료 제외 서브쿼리
+        self.assertNotIn("medical", filter_sql)  # 2026-07-23: 도메인 제외 전면 제거
         self.assertIn("asset_lineage l", filter_sql)  # relation_proposed EXISTS
         self.assertIn("l.activity = %s", filter_sql)
         # activity 파라미터가 첫 번째(SELECT 리스트 EXISTS 가 WHERE 보다 먼저 등장)
@@ -217,11 +217,12 @@ class QueryAssetsShapeTest(unittest.TestCase):
         self.assertIn("substring(fs_path from", select_sql)
         self.assertIn("AS file_ext", select_sql)
 
-    def test_always_excludes_medical(self):
+    def test_no_domain_exclusion(self):
+        # 2026-07-23: 도메인 제외 전면 제거 — query_assets SQL 에 medical 배제 없음.
         conn = _Conn([(0,), []])
         query_assets(conn)
         for sql, _params in conn._cur.calls:
-            self.assertIn("domain_label <> 'medical'", sql)
+            self.assertNotIn("medical", sql)
 
     def test_filters_in_where_and_params(self):
         conn = _Conn([(0,), []])
@@ -232,7 +233,7 @@ class QueryAssetsShapeTest(unittest.TestCase):
         self.assertIn("status = %s", count_sql)
         self.assertIn("modality = %s", count_sql)
         self.assertIn("domain_label = %s", count_sql)
-        self.assertIn("domain_label <> 'medical'", count_sql)
+        self.assertNotIn("<> 'medical'", count_sql)  # 2026-07-23: 도메인 제외 전면 제거
         self.assertEqual(count_params, ["registered", "text", "general"])
         # SELECT 도 동일 필터 + limit/offset 바인딩
         self.assertEqual(select_params, ["registered", "text", "general", 50, 0])
@@ -243,18 +244,19 @@ class QueryAssetsShapeTest(unittest.TestCase):
         query_assets(conn, file_ext="pdf", created_from=dt)
         count_sql, count_params = conn._cur.calls[0]
         # file_ext 은 fs_path 확장자 식 = %s, 날짜는 created_at >= %s, 의료 제외 항상 포함
-        self.assertIn("substring(fs_path from", count_sql)
+        self.assertIn("substring(a.fs_path from", count_sql)  # 별칭 통일로 COUNT 도 a. 한정
         self.assertIn("created_at >= %s", count_sql)
-        self.assertIn("domain_label <> 'medical'", count_sql)
+        self.assertNotIn("medical", count_sql)  # 2026-07-23: 도메인 제외 전면 제거
         self.assertEqual(count_params, ["pdf", dt])
 
-    def test_domain_medical_filter_contradiction_safe(self):
-        # domain='medical' 요청 시 'domain_label<>medical' AND 'domain_label=medical' → 0행(PHI 안전)
+    def test_domain_medical_filter_returns_medical(self):
+        # 2026-07-23: 도메인 제외 전면 제거 — domain='medical' 요청 시 medical 자산이 조회된다(배제 없음).
         conn = _Conn([(0,), []])
         query_assets(conn, domain="medical")
-        count_sql, _ = conn._cur.calls[0]
-        self.assertIn("domain_label <> 'medical'", count_sql)
+        count_sql, count_params = conn._cur.calls[0]
         self.assertIn("domain_label = %s", count_sql)
+        self.assertNotIn("<> 'medical'", count_sql)  # 배제 절 없음
+        self.assertEqual(count_params, ["medical"])
 
     def test_deterministic_order_sql(self):
         conn = _Conn([(0,), []])
@@ -300,15 +302,16 @@ class QueryAssetsContentTest(unittest.TestCase):
         self.assertNotIn("keywords", out["rows"][0])
         self.assertNotIn("LEFT JOIN asset_metadata", conn._cur.calls[1][0])
 
-    def test_with_content_still_excludes_medical(self):
+    def test_with_content_no_domain_exclusion(self):
+        # 2026-07-23: 도메인 제외 전면 제거 — content 경로도 medical 배제 없음.
         conn = _Conn([(0,), []])
         query_assets(conn, with_content=True)
         for sql, _p in conn._cur.calls:
-            self.assertIn("domain_label <> 'medical'", sql)
+            self.assertNotIn("medical", sql)
 
     def test_with_content_with_date_qualifies_created_at(self):
         # 🔴 회귀 가드: with_content JOIN + 날짜 필터 시 created_at 모호성(asset·asset_metadata 양쪽 보유)
-        # → content SELECT 는 a. 한정해야 PG 오류 없음. COUNT(단일 테이블)은 비한정 유지.
+        # → content SELECT 는 a. 한정해야 PG 오류 없음. 2026-07-23: COUNT·경량목록도 asset a 별칭 통일(a. 한정).
         dt = datetime(2026, 1, 1, tzinfo=timezone.utc)
         conn = _Conn([(0,), []])
         query_assets(conn, with_content=True, created_from=dt, created_to=dt)
@@ -316,9 +319,9 @@ class QueryAssetsContentTest(unittest.TestCase):
         self.assertIn("LEFT JOIN asset_metadata", select_sql)
         self.assertIn("a.created_at >= %s", select_sql)  # JOIN 경로 한정
         self.assertIn("a.created_at < %s", select_sql)
-        self.assertIn("a.domain_label <> 'medical'", select_sql)
-        self.assertNotIn("LEFT JOIN", count_sql)  # COUNT 은 단일 테이블·비한정(모호성 없음)
-        self.assertIn("WHERE domain_label <> 'medical'", count_sql)
+        self.assertNotIn("LEFT JOIN", count_sql)  # COUNT 은 JOIN 불요(경량)
+        self.assertIn("a.created_at >= %s", count_sql)  # 별칭 통일로 COUNT 도 a. 한정(EXISTS 상관 봉인)
+        self.assertNotIn("medical", count_sql)  # 도메인 제외 전면 제거
 
 
 class SnapshotBucketPredicateTest(unittest.TestCase):
@@ -427,7 +430,7 @@ class QueryAssetsSnapshotBucketTest(unittest.TestCase):
         self.assertNotIn("status = %s", count_sql)
         # 결정적 정렬·의료 제외 유지
         self.assertIn("ORDER BY created_at DESC, asset_id DESC", select_sql)
-        self.assertIn("domain_label <> 'medical'", count_sql)
+        self.assertNotIn("medical", count_sql)  # 2026-07-23: 도메인 제외 전면 제거
         # 파라미터 순서 = WHERE 순서(specs 불변식): 의료 제외(무파라미터) →
         #   버킷 술어 EXISTS[activity, occurred_since, occurred_until] →
         #   자산 created 기간[created_from, created_to]. period 라 관계 occurred 기간도 스코프되고
@@ -479,7 +482,7 @@ class QueryAssetsSnapshotBucketTest(unittest.TestCase):
 
 
 class ModalityDetailTest(unittest.TestCase):
-    """단일 모달리티 스코프 집계(보완 v6) — 확장자·상태·일자 + 총계, 의료 제외."""
+    """단일 모달리티 스코프 집계(보완 v6) — 확장자·상태·일자 + 총계(도메인 제외 없음)."""
     def test_shape_and_modality_bound(self):
         d = datetime(2026, 6, 30, tzinfo=timezone.utc).date()
         # COUNT → by_file_ext → by_status → by_date 순(4 쿼리)
@@ -498,7 +501,7 @@ class ModalityDetailTest(unittest.TestCase):
         # modality 는 %s 바인딩(인젝션 안전)·4 쿼리 모두 의료 제외
         self.assertEqual(len(conn._cur.calls), 4)
         for sql, params in conn._cur.calls:
-            self.assertIn("domain_label <> 'medical'", sql)
+            self.assertNotIn("medical", sql)  # 2026-07-23: 도메인 제외 전면 제거
             self.assertIn("modality = %s", sql)
             self.assertEqual(params, ["video"])
 
@@ -530,7 +533,7 @@ class AssetTimelineTest(unittest.TestCase):
         self.assertEqual(out["interval"], "day")
         self.assertEqual(out["buckets"][0]["count"], 5)
         self.assertNotIn("series", out)
-        self.assertIn("domain_label <> 'medical'", conn._cur.calls[0][0])
+        self.assertNotIn("medical", conn._cur.calls[0][0])  # 2026-07-23: 도메인 제외 전면 제거
 
     def test_group_by_modality_multiseries(self):
         ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
@@ -578,7 +581,7 @@ class AssetTimelineTest(unittest.TestCase):
         sql, params = conn._cur.calls[0]
         self.assertIn("modality = %s", sql)
         self.assertIn("video", params)
-        self.assertIn("domain_label <> 'medical'", sql)  # 의료 제외 유지
+        self.assertNotIn("medical", sql)  # 2026-07-23: 도메인 제외 전면 제거
 
     def test_no_modality_keeps_legacy_shape(self):
         # 하위호환: modality 미지정(기본 None)이면 기존 SQL·동작 불변(modality 절 없음).
@@ -615,7 +618,7 @@ class BuildModalityOverviewTest(unittest.TestCase):
         self.assertEqual(out["first_page"]["rows"][0]["file_name"], "뉴스.mp4")
         self.assertEqual(out["first_page"]["rows"][0]["summary"], "요약")  # with_content
 
-    def test_overview_scopes_all_slices_to_modality_and_medical_excluded(self):
+    def test_overview_scopes_all_slices_to_modality(self):
         conn = _Conn([
             (0,), [], [], [],   # modality_detail
             [],                 # asset_timeline
@@ -623,7 +626,7 @@ class BuildModalityOverviewTest(unittest.TestCase):
         ])
         build_modality_overview(conn, "image")
         for sql, _p in conn._cur.calls:
-            self.assertIn("domain_label <> 'medical'", sql)  # 의료 제외 상속(모든 슬라이스)
+            self.assertNotIn("medical", sql)  # 2026-07-23: 도메인 제외 전면 제거(모든 슬라이스)
         # asset_timeline 슬라이스(5번째 execute)에 modality=%s 스코프
         self.assertIn("modality = %s", conn._cur.calls[4][0])
 

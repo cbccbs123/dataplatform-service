@@ -204,7 +204,7 @@ def asset_stats_endpoint(
 def assets_list(
     status: str | None = Query(None, description="FSM 단계 필터(received/registered/failed 등)"),
     modality: str | None = Query(None, description="모달리티 필터(text/image/video/audio 등)"),
-    domain: str | None = Query(None, description="도메인 필터(general/review; medical 은 제외됨)"),
+    domain: str | None = Query(None, description="도메인 필터(general/review/medical 등)"),
     file_ext: str | None = Query(None, description="파일 확장자 필터(예: txt, pdf, mp4)"),
     created_from: str | None = Query(None, description="생성일 하한(YYYY-MM-DD 또는 ISO)"),
     created_to: str | None = Query(None, description="생성일 상한"),

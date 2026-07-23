@@ -1,8 +1,8 @@
 """013 US2 — 자산 계보(asset_lineage) 조회. 읽기 전용·결정적(헌법 3조)·LLM 0.
 
 기록(record_lineage)은 수집·관계 파이프라인이 이미 함. 본 모듈은 활동을 시간순으로 끌어올린다.
-**의료(PHI) 제외**: asset 조인으로 domain_label='medical' 자산의 계보는 노출하지 않는다
-(검색·상세·대시보드와 일관·헌법 10조·FR-014). 비의료 자산은 status 무관 전부 포함(운영상 failed 계보 필요).
+**도메인 제외 없음(2026-07-23 전면 제거)**: 의료 특수 트랙 미운용이라 도메인 무관 균일 노출.
+자산은 status 무관 전부 포함(운영상 failed 계보 필요). 의료 복귀(3년차) 시 제외 재도입.
 """
 from __future__ import annotations
 
@@ -15,10 +15,11 @@ from service.portal._timeline_util import TIMELINE_INTERVALS, pivot_series
 # 문자열 표류 방지(관계 제안 집계 두 곳이 같은 activity 를 본다).
 from service.portal.asset_stats import _RELATION_PROPOSED_ACTIVITY
 
-# 의료 제외 고정 절(사용자 입력 아님·인젝션 안전). al=asset_lineage, a=asset.
-_NONMEDICAL = (
+# 계보 조회 공통 FROM/JOIN(al=asset_lineage, a=asset). 동적 WHERE 절을 AND 로 이어 붙이기 위한
+# always-true 앵커(WHERE TRUE)만 둔다. 도메인 제외 없음(2026-07-23 전면 제거·의료 특수 트랙 미운용).
+_LINEAGE_FROM = (
     "FROM asset_lineage al JOIN asset a ON a.asset_id = al.asset_id "
-    "WHERE a.domain_label <> 'medical'"
+    "WHERE TRUE"
 )
 # 파일 확장자(file_ext) = a.fs_path 마지막 .세그먼트(소문자). 단일 출처 ext_expr(별칭 a. — JOIN 모호성 차단).
 _EXT_EXPR = ext_expr("a.")
@@ -29,7 +30,7 @@ def query_asset_lineage(conn: Any, asset_id: str, *, limit: int = 500) -> list[d
     with conn.cursor() as cur:
         cur.execute(
             "SELECT al.activity, al.agent, al.used, al.generated, al.occurred_at "
-            + _NONMEDICAL + " AND al.asset_id = %s "
+            + _LINEAGE_FROM + " AND al.asset_id = %s "
             "ORDER BY al.occurred_at ASC, al.lineage_id ASC LIMIT %s",
             (asset_id, limit))
         return [
@@ -70,11 +71,11 @@ def query_lineage_feed(
         params.append(file_ext)
     extra = (" AND " + " AND ".join(conds)) if conds else ""
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) " + _NONMEDICAL + extra, params)
+        cur.execute("SELECT COUNT(*) " + _LINEAGE_FROM + extra, params)
         total = int(cur.fetchone()[0])
         cur.execute(
             "SELECT al.lineage_id, al.asset_id, al.activity, al.agent, al.occurred_at "
-            + _NONMEDICAL + extra
+            + _LINEAGE_FROM + extra
             + " ORDER BY al.occurred_at DESC, al.lineage_id DESC LIMIT %s OFFSET %s",
             [*params, limit, offset])
         rows = [
@@ -90,7 +91,7 @@ _GROUP_COLS = {"activity": "al.activity", "modality": "a.modality", "status": "a
 
 
 def _lineage_filter(since: Any, until: Any, activity: str | None) -> tuple[str, list[Any]]:
-    """계보 공통 필터 절(기간·활동) + 파라미터. _NONMEDICAL 뒤에 AND 로 붙인다."""
+    """계보 공통 필터 절(기간·활동) + 파라미터. _LINEAGE_FROM 뒤에 AND 로 붙인다."""
     conds: list[str] = []
     params: list[Any] = []
     if since is not None:
@@ -110,22 +111,22 @@ def lineage_stats(conn: Any, *, since: Any = None, until: Any = None,
     """계보 집계(차트·KPI용·FR-009g 보완) — 총계 + 활동별·일별·modality·status·file_ext별. 의료 제외·결정적."""
     extra, params = _lineage_filter(since, until, activity)
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) " + _NONMEDICAL + extra, params)
+        cur.execute("SELECT COUNT(*) " + _LINEAGE_FROM + extra, params)
         total = int(cur.fetchone()[0])
-        cur.execute("SELECT al.activity, COUNT(*) " + _NONMEDICAL + extra
+        cur.execute("SELECT al.activity, COUNT(*) " + _LINEAGE_FROM + extra
                     + " GROUP BY al.activity ORDER BY COUNT(*) DESC, al.activity ASC", params)
         by_activity = [{"activity": a, "count": int(c)} for a, c in cur.fetchall()]
-        cur.execute("SELECT al.occurred_at::date AS d, COUNT(*) " + _NONMEDICAL + extra
+        cur.execute("SELECT al.occurred_at::date AS d, COUNT(*) " + _LINEAGE_FROM + extra
                     + " GROUP BY d ORDER BY d ASC", params)
         by_day = [{"day": d.isoformat() if d is not None else None, "count": int(c)}
                   for d, c in cur.fetchall()]
-        cur.execute("SELECT a.modality, COUNT(*) " + _NONMEDICAL + extra
+        cur.execute("SELECT a.modality, COUNT(*) " + _LINEAGE_FROM + extra
                     + " GROUP BY a.modality ORDER BY COUNT(*) DESC, a.modality ASC", params)
         by_modality = [{"modality": m, "count": int(c)} for m, c in cur.fetchall()]
-        cur.execute("SELECT a.status, COUNT(*) " + _NONMEDICAL + extra
+        cur.execute("SELECT a.status, COUNT(*) " + _LINEAGE_FROM + extra
                     + " GROUP BY a.status ORDER BY COUNT(*) DESC, a.status ASC", params)
         by_status = [{"status": s, "count": int(c)} for s, c in cur.fetchall()]
-        cur.execute(f"SELECT {_EXT_EXPR} AS ext, COUNT(*) " + _NONMEDICAL + extra
+        cur.execute(f"SELECT {_EXT_EXPR} AS ext, COUNT(*) " + _LINEAGE_FROM + extra
                     + " GROUP BY ext ORDER BY COUNT(*) DESC, ext ASC NULLS LAST", params)
         by_file_ext = [{"file_ext": e, "count": int(c)} for e, c in cur.fetchall()]
     return {"total": total, "by_activity": by_activity, "by_day": by_day,
@@ -145,10 +146,10 @@ def lineage_timeline(conn: Any, *, since: Any = None, until: Any = None, activit
             gcol = _GROUP_COLS[group_by]
             cur.execute(
                 f"SELECT {gcol} AS key, date_trunc('{trunc}', al.occurred_at) AS bkt, COUNT(*) "
-                + _NONMEDICAL + extra + " GROUP BY key, bkt ORDER BY key ASC, bkt ASC", params)
+                + _LINEAGE_FROM + extra + " GROUP BY key, bkt ORDER BY key ASC, bkt ASC", params)
             return {"interval": trunc, "group_by": group_by, "series": pivot_series(cur.fetchall())}
         cur.execute(f"SELECT date_trunc('{trunc}', al.occurred_at) AS bkt, COUNT(*) "
-                    + _NONMEDICAL + extra + " GROUP BY bkt ORDER BY bkt ASC", params)
+                    + _LINEAGE_FROM + extra + " GROUP BY bkt ORDER BY bkt ASC", params)
         buckets = [{"bucket": b.isoformat() if b is not None else None, "count": int(c)}
                    for b, c in cur.fetchall()]
         return {"interval": trunc, "buckets": buckets}
@@ -170,10 +171,10 @@ def relation_proposed_summary(conn: Any, *, since: Any = None, until: Any = None
     기간(since/until)은 **occurred_at**(제안 발생 시각) 기준·to exclusive. interval 은 TIMELINE_INTERVALS
     화이트리스트(f-string 안전·그 외 값은 'day' 폴백; API 계층이 422 로 선처리). SQL 등장 순서 =
     파라미터 순서(activity → occurred_since → occurred_until)로 순서 불변식을 지킨다. 의료 제외는
-    ``_NONMEDICAL`` 조인 재사용(헌법 10조).
+    ``_LINEAGE_FROM`` 조인 재사용(헌법 10조).
     """
     trunc = interval if interval in TIMELINE_INTERVALS else "day"
-    where = _NONMEDICAL + " AND al.activity = %s"
+    where = _LINEAGE_FROM + " AND al.activity = %s"
     params: list[Any] = [_RELATION_PROPOSED_ACTIVITY]
     if since is not None:
         where += " AND al.occurred_at >= %s"

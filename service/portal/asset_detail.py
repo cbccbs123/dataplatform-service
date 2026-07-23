@@ -8,7 +8,7 @@
        max_confidence·edges 로 정규화(결정적 정렬). 프론트 mergeRelationsByAsset 재구현 제거.
 
 노출 게이트(FR-014)
-    행 없음 / ``status != 'registered'`` / ``domain_label = 'medical'`` → ``None`` (API 404).
+    행 없음 / ``status != 'registered'`` → ``None`` (API 404). (2026-07-23: 도메인 제외 전면 제거.)
 
 ext_meta read 집행(042 · 040 tier · 041 레지스트리)
     ``clearance`` 지정 시 ``fetch_access_tiers`` + ``project_ext_meta`` — tier 미달 키 **제거(omit)**.
@@ -127,8 +127,6 @@ def fetch_asset_detail(
     if row is None:
         return None
     if row["status"] != "registered":
-        return None
-    if row["domain_label"] == "medical":
         return None
 
     with conn.cursor(row_factory=dict_row) as cur:

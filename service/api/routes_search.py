@@ -24,8 +24,9 @@ from src.search.search_service import search_hybrid
 
 router = APIRouter()
 
-# 의료(PHI) 배제 도메인 집합(FR-014). group_ranked 가 각 모달리티 버킷에서 이 도메인 행을 제거한다.
-_EXCLUDE_DOMAINS = frozenset({"medical"})
+# 도메인 배제 집합 — 2026-07-23 전면 제거로 비움(group_ranked 가 이 집합의 도메인 행만 제거).
+# 의료 특수 트랙 미운용. 의료 복귀(3년차) 시 frozenset({"medical"}) 로 되돌린다.
+_EXCLUDE_DOMAINS: frozenset[str] = frozenset()
 
 # search_hybrid 의 버킷당 후보 풀 **기본값**. /search 의 limit_per_bucket 로 요청마다 덮어쓴다.
 # 응답은 모달리티별 top-N(size)으로 자르지만 풀은 그보다 깊게 받아야 (a)의료 배제 잔여 (b)074 검증
@@ -393,7 +394,7 @@ def search(
         disable_os_cutoff=no_cutoff,
     )
 
-    # FR-014: 버킷별 의료 배제 + 모달리티별 독립 랭킹·top-N. results 는 {modality: [rows]}.
+    # 버킷별 도메인 배제(2026-07-23 비활성·_EXCLUDE_DOMAINS 빈집합) + 모달리티별 독립 랭킹·top-N. results 는 {modality: [rows]}.
     grouped_raw = group_ranked(result, limit_per_modality=size, exclude_domains=_EXCLUDE_DOMAINS)
 
     # tier projection(042)과 주제 패싯(056 FR-503)을 **같은 읽기 트랜잭션**에서 계산한다(풀 1회).

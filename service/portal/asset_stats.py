@@ -1,6 +1,6 @@
 """013 US4 — 자산/FSM 대시보드 집계·목록 조회. 읽기 전용·결정적(헌법 3·6조)·LLM 0.
 
-자산 데이터·스키마는 쓰기 0(SELECT only). 의료 도메인은 고정 SQL 로 항상 제외하며,
+자산 데이터·스키마는 쓰기 0(SELECT only). 도메인 제외 없음(2026-07-23 전면 제거·의료 특수 트랙 미운용).
 정렬은 COUNT(*) DESC + key ASC / created_at DESC + asset_id DESC tiebreak 으로 결정적이다.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from src.config.filename_util import (
 from service.portal._ext_expr import ext_expr  # 확장자 SQL 정규식 단일 출처(069 D4·057 FR-104)
 from service.portal._timeline_util import TIMELINE_INTERVALS, pivot_series
 
-_EXCLUDE_MEDICAL = "domain_label <> 'medical'"  # 고정 SQL(사용자 입력 아님)·검색/상세와 일관
+# 도메인 제외 없음(2026-07-23 전면 제거) — 의료 특수 트랙 미운용이라 통계·목록은 도메인 무관 균일 집계.
 # 파일 확장자(file_ext) = fs_path 마지막 .세그먼트(소문자·없으면 NULL). 단일 출처 ext_expr(비한정 fs_path).
 _EXT_EXPR = ext_expr()
 
@@ -73,11 +73,12 @@ def _snapshot_bucket_predicate(bucket: str, pfx: str, *, relation_scope: str,
 
 
 def _period_clause(since: Any, until: Any) -> tuple[str, list[Any]]:
-    """의료 제외 + 생성일(created_at) 기간 필터 WHERE 절·파라미터(단일 테이블 asset 전용·비한정).
+    """생성일(created_at) 기간 필터 WHERE 절·파라미터(단일 테이블 asset 전용·비한정).
 
     to(until) 는 exclusive(``< %s``) — query_assets·timeline·다른 API 와 동일 규칙. 미지정이면 전체.
+    (2026-07-23: 도메인 제외 전면 제거 — 조건이 하나도 없으면 WHERE 절을 아예 만들지 않는다.)
     """
-    conds = [_EXCLUDE_MEDICAL]
+    conds: list[str] = []
     params: list[Any] = []
     if since is not None:
         conds.append("created_at >= %s")
@@ -85,19 +86,20 @@ def _period_clause(since: Any, until: Any) -> tuple[str, list[Any]]:
     if until is not None:
         conds.append("created_at < %s")
         params.append(until)
-    return "WHERE " + " AND ".join(conds), params
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    return where, params
 
 
 def asset_stats(conn: Any, *, since: Any = None, until: Any = None,
                 snapshot_buckets: bool = False) -> dict[str, Any]:
-    """전체 자산 집계(status·modality·domain·file_ext·date별·총계·의료 제외·결정적·FR-009e).
+    """전체 자산 집계(status·modality·domain·file_ext·date별·총계·결정적·FR-009e·도메인 제외 없음).
 
     ``since``/``until``(생성일 from/to·to exclusive·보완 v6) 지정 시 6개 집계 전부 기간 스코프
     (대시보드 기간 필터가 파일 포맷·모달리티·일자 분포에 일관 반영). 미지정이면 전체 기간.
 
     ``snapshot_buckets=True``(054·계보 현황 화면·FR-201/202) 지정 시 응답에 ``by_snapshot_bucket``
     (운영 5버킷 count·``_SNAPSHOT_BUCKETS`` 순서·0건도 항상 포함)을 추가한다. 버킷 자산집합은 total 과
-    **동일한 ``_period_clause`` 스코프**(의료 제외 + created_at 기간)라 ``sum(by_snapshot_bucket)==total``
+    **동일한 ``_period_clause`` 스코프**(created_at 기간·도메인 제외 없음)라 ``sum(by_snapshot_bucket)==total``
     이 보장된다. relation_proposed 판별(EXISTS)만은 관계 제안 유무를 전 기간에서 보는 alltime(FR-202:
     자산 created 기간 안이면 과거 관계 제안도 반영). ``snapshot_buckets=False``(기본)면 기존 응답·SQL 이
     완전히 불변이다(하위호환·FILTER 쿼리 미실행).
@@ -186,9 +188,9 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
     조건·파라미터는 ``specs`` 한 곳에서 (템플릿, 값리스트) 쌍으로 누적해 순서 불변식을 구조적으로 보장한다.
     """
     # (조건템플릿, 파라미터리스트)를 한 곳에서 누적 → 조건 순서와 파라미터 순서가 구조적으로 일치(불변식 내재화).
-    # 템플릿의 ``{a}`` = 테이블 접두사 자리("" 단일테이블 / "a." asset_metadata JOIN 모호성 방지).
-    # 값리스트는 execute 시 순서대로 확장(extend) — 파라미터 없는 조건(의료 제외)은 [] 로 둔다.
-    specs: list[tuple[str, list[Any]]] = [("{a}" + _EXCLUDE_MEDICAL, [])]
+    # 템플릿의 ``{a}`` = 테이블 접두사 자리 — 전 경로 "a." 별칭 통일(EXISTS 상관 버그 방지·아래 _where).
+    # 값리스트는 execute 시 순서대로 확장(extend). specs 가 비면 _where 가 WHERE 절을 만들지 않는다.
+    specs: list[tuple[str, list[Any]]] = []
     if snapshot_bucket:
         # C3: snapshot_bucket 우선 — status 스펙은 추가하지 않고 버킷 술어로 대체한다.
         # 버킷 술어 파라미터 순서(activity→occurred_since→occurred_until)를 specs 값리스트에 그대로 실어
@@ -212,11 +214,15 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
         specs.append(("{a}created_at < %s", [created_to]))
     params = [v for _t, vs in specs for v in vs]
 
-    def _where(pfx: str) -> str:  # 같은 조건을 접두사만 바꿔 — content 경로는 "a." 로 모호성 차단
+    def _where(pfx: str) -> str:  # specs 를 접두사 채워 WHERE 로. 조건 0 개면 절 자체를 만들지 않는다.
+        if not specs:
+            return ""
         return " WHERE " + " AND ".join(t.format(a=pfx) for t, _vs in specs)
 
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM asset" + _where(""), params)  # COUNT 은 JOIN 불요(경량·비한정)
+        # COUNT·경량목록도 ``asset a`` 별칭 + _where("a.") — EXISTS 상관(l.asset_id=a.asset_id)이
+        # 비한정이면 asset_lineage 동명 컬럼에 바인딩돼 상관이 풀리던 버그를 별칭 통일로 봉인.
+        cur.execute("SELECT COUNT(*) FROM asset a" + _where("a."), params)
         total = int(cur.fetchone()[0])
         # FR-104(057): 행에 file_ext 하향(하위호환) — by_file_ext 집계와 동일한 _EXT_EXPR(fs_path 확장자)
         # 로 파생해 행 file_ext == 집계 버킷 키(프론트 파일명 파싱·폴백 확장자 집계 제거·admin B2).
@@ -238,8 +244,8 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
         else:
             cur.execute(
                 "SELECT asset_id, status, modality, domain_label, fs_path, created_at, "
-                + _EXT_EXPR + " AS file_ext FROM asset"
-                + _where("") + " ORDER BY created_at DESC, asset_id DESC LIMIT %s OFFSET %s",
+                + _EXT_EXPR + " AS file_ext FROM asset a"
+                + _where("a.") + " ORDER BY created_at DESC, asset_id DESC LIMIT %s OFFSET %s",
                 [*params, limit, offset])
             rows = [
                 {"asset_id": str(aid), "status": st, "modality": mod, "domain_label": dl,
@@ -252,12 +258,12 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
 
 def modality_detail(conn: Any, modality: str, *, since: Any = None,
                     until: Any = None) -> dict[str, Any]:
-    """단일 모달리티 스코프 집계(보완 v6) — 총계 + 확장자·상태·일자별. 의료 제외·결정적·LLM 0.
+    """단일 모달리티 스코프 집계(보완 v6) — 총계 + 확장자·상태·일자별. 결정적·LLM 0(도메인 제외 없음).
 
     모달리티 드릴다운(예: video 안에서 mp4/mov 분포·일자 추이·FSM 상태). modality 는 %s 바인딩.
     ``since``/``until``(생성일 from/to·to exclusive) 지정 시 개요(asset_stats) 기간 필터와 일관 스코프.
     """
-    conds = [_EXCLUDE_MEDICAL, "modality = %s"]
+    conds = ["modality = %s"]
     p: list[Any] = [modality]
     if since is not None:
         conds.append("created_at >= %s")
@@ -286,7 +292,7 @@ def modality_detail(conn: Any, modality: str, *, since: Any = None,
 def asset_timeline(conn: Any, *, since: Any = None, until: Any = None,
                    interval: str = "day", group_by: str | None = None,
                    modality: str | None = None) -> dict[str, Any]:
-    """자산 생성 일자 추이(보완 v6·계보 timeline 과 동일 멀티시리즈 패턴). 의료 제외·결정적·LLM 0.
+    """자산 생성 일자 추이(보완 v6·계보 timeline 과 동일 멀티시리즈 패턴). 결정적·LLM 0(도메인 제외 없음).
 
     ``group_by``(modality/status/domain) 주면 멀티시리즈(시리즈 key ASC·버킷 ASC), 미지정이면 단일
     시리즈({interval, buckets}). trunc 화이트리스트(f-string 안전)·기간(since/until)은 %s 바인딩.
@@ -295,7 +301,7 @@ def asset_timeline(conn: Any, *, since: Any = None, until: Any = None,
     %s 바인딩). 미지정(기본 None)이면 기존 SQL·동작이 완전히 불변이다(하위호환·바이트 동일).
     """
     trunc = interval if interval in TIMELINE_INTERVALS else "day"
-    conds = [_EXCLUDE_MEDICAL]
+    conds: list[str] = []
     params: list[Any] = []
     if modality:
         conds.append("modality = %s")
@@ -306,7 +312,7 @@ def asset_timeline(conn: Any, *, since: Any = None, until: Any = None,
     if until is not None:
         conds.append("created_at < %s")
         params.append(until)
-    where = " WHERE " + " AND ".join(conds)
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
     with conn.cursor() as cur:
         if group_by in _GROUP_COLS:
             gcol = _GROUP_COLS[group_by]

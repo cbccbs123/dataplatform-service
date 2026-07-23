@@ -255,15 +255,15 @@ class TestFetchAssetDetail(unittest.TestCase):
         self.assertIsNone(fetch_asset_detail(conn, asset_id="A1"))
 
     @patch("service.portal.asset_detail.fetch_active_relations_for_asset")
-    def test_medical_returns_none(self, mock_rel) -> None:
-        # 의료 자산 배제(FR-014) → None.
+    def test_medical_returns_detail(self, mock_rel) -> None:
+        # 2026-07-23: 도메인 제외 전면 제거 — 의료 자산도 상세가 조회된다(None 아님).
         mock_rel.return_value = []
         row = dict(_REGISTERED_ROW)
         row["domain_label"] = "medical"
         conn, _ = _conn_for_detail(row, [])
         from service.portal.asset_detail import fetch_asset_detail
 
-        self.assertIsNone(fetch_asset_detail(conn, asset_id="A1"))
+        self.assertIsNotNone(fetch_asset_detail(conn, asset_id="A1"))
 
     @patch("service.portal.asset_detail.fetch_active_relations_for_asset")
     def test_determinism_same_input_same_output(self, mock_rel) -> None:

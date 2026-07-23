@@ -56,7 +56,7 @@ class QueryLineageTest(unittest.TestCase):
         query_asset_lineage(conn, "a1")
         sql = conn._cur.calls[0][0]
         self.assertIn("ORDER BY al.occurred_at ASC", sql)
-        self.assertIn("a.domain_label <> 'medical'", sql)  # 의료 제외 조인(헌법 10조)
+        self.assertNotIn("medical", sql)  # 2026-07-23: 도메인 제외 전면 제거
 
 
 class QueryLineageFeedTest(unittest.TestCase):
@@ -81,7 +81,7 @@ class QueryLineageFeedTest(unittest.TestCase):
         # 두 번째 execute(rows 조회)에 시간역순·tiebreak 정렬 SQL 사용 확인
         rows_sql = conn._cur.calls[1][0]
         self.assertIn("ORDER BY al.occurred_at DESC, al.lineage_id DESC", rows_sql)
-        self.assertIn("a.domain_label <> 'medical'", rows_sql)  # 의료 제외(헌법 10조)
+        self.assertNotIn("medical", rows_sql)  # 2026-07-23: 도메인 제외 전면 제거
 
     def test_activity_filter_in_where(self):
         conn = _SeqConn([(0,), []])
@@ -99,13 +99,13 @@ class QueryLineageFeedTest(unittest.TestCase):
         self.assertIn("a.modality = %s", count_sql)
         self.assertIn("a.status = %s", count_sql)
         self.assertIn("substring(a.fs_path from", count_sql)  # file_ext=확장자
-        self.assertIn("a.domain_label <> 'medical'", count_sql)  # 의료 제외 유지
+        self.assertNotIn("medical", count_sql)  # 2026-07-23: 도메인 제외 전면 제거
         for v in ("video", "registered", "mp4"):
             self.assertIn(v, count_params)
 
 
 class LineageStatsTest(unittest.TestCase):
-    def test_shape_and_medical_excluded(self):
+    def test_shape_and_no_domain_exclusion(self):
         d = datetime(2026, 6, 30, tzinfo=timezone.utc).date()
         # COUNT → by_activity → by_day → by_modality → by_status → by_file_ext (6 쿼리)
         conn = _SeqConn([
@@ -123,10 +123,10 @@ class LineageStatsTest(unittest.TestCase):
         self.assertEqual(out["by_modality"][0]["modality"], "text")
         self.assertEqual(out["by_status"][0]["status"], "registered")
         self.assertEqual(out["by_file_ext"][0]["file_ext"], "txt")
-        # 6개 SQL 모두 의료 제외 조인 포함
+        # 2026-07-23: 도메인 제외 전면 제거 — 6개 SQL 어디에도 medical 배제 없음.
         self.assertEqual(len(conn._cur.calls), 6)
         for sql, _p in conn._cur.calls:
-            self.assertIn("a.domain_label <> 'medical'", sql)
+            self.assertNotIn("medical", sql)
 
 
 class LineageTimelineTest(unittest.TestCase):
@@ -159,7 +159,7 @@ class LineageTimelineTest(unittest.TestCase):
         self.assertEqual(out["series"][1]["key"], "ingest.registered.v1")
         # group_by 컬럼은 화이트리스트 매핑이라 SQL 에 al.activity 로 들어감(인젝션 안전)
         self.assertIn("al.activity AS key", conn._cur.calls[0][0])
-        self.assertIn("a.domain_label <> 'medical'", conn._cur.calls[0][0])
+        self.assertNotIn("medical", conn._cur.calls[0][0])  # 2026-07-23: 도메인 제외 전면 제거
 
 
 class RelationProposedSummaryTest(unittest.TestCase):
@@ -190,12 +190,12 @@ class RelationProposedSummaryTest(unittest.TestCase):
         self.assertIn("COUNT(DISTINCT al.asset_id)", count_sql)
         self.assertNotIn("LIMIT", count_sql.upper())
 
-    def test_activity_bound_and_medical_excluded(self):
+    def test_activity_bound(self):
         conn = self._conn(0, [])
         relation_proposed_summary(conn)
         for sql, params in conn._cur.calls:
             self.assertIn("al.activity = %s", sql)
-            self.assertIn("a.domain_label <> 'medical'", sql)  # 의료 제외 조인(헌법 10조)
+            self.assertNotIn("medical", sql)  # 2026-07-23: 도메인 제외 전면 제거
             self.assertIn(_RELATION_PROPOSED_ACTIVITY, params)
 
     def test_timeline_distinct_assets_per_bucket_deterministic(self):
