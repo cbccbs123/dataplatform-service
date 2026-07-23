@@ -24,11 +24,12 @@ class TestSnapshotBucketsE2E(unittest.TestCase):
                 bkts = s["by_snapshot_bucket"]
                 # 5버킷 항상·순서 고정
                 self.assertEqual([b["bucket"] for b in bkts], list(_SNAPSHOT_BUCKETS))
-                # 합 == total(의료 제외 동일 스코프) — 도넛 정합
+                # 합 == total(동일 스코프·2026-07-23 도메인 제외 없음) — 도넛 정합
                 self.assertEqual(sum(b["count"] for b in bkts), s["total"])
 
     def test_relation_proposed_registered_partition(self):
-        # relation_proposed + registered 합 == 전체 registered(상호배타·전수 커버)
+        # relation_proposed + registered 합 == 전체 registered(상호배타·전수 커버).
+        # 2026-07-23: 도메인 제외 전면 제거 — 기준 쿼리도 domain 필터 없이 전체 registered 로 맞춘다.
         from service.portal.asset_stats import query_assets
         db = _conn_ctx()
         with db:
@@ -36,12 +37,12 @@ class TestSnapshotBucketsE2E(unittest.TestCase):
                 rp = query_assets(conn, snapshot_bucket="relation_proposed", relation_scope="alltime", limit=1)
                 reg = query_assets(conn, snapshot_bucket="registered", relation_scope="alltime", limit=1)
                 total_registered = conn.execute(
-                    "SELECT count(*) FROM asset WHERE domain_label <> 'medical' AND status = 'registered'"
+                    "SELECT count(*) FROM asset WHERE status = 'registered'"
                 ).fetchone()[0]
                 self.assertEqual(rp["total"] + reg["total"], total_registered)
                 # rp total == registered ∧ EXISTS(relations.proposed.v1)
                 exp_rp = conn.execute(
-                    "SELECT count(*) FROM asset a WHERE a.domain_label <> 'medical' AND a.status = 'registered' "
+                    "SELECT count(*) FROM asset a WHERE a.status = 'registered' "
                     "AND EXISTS (SELECT 1 FROM asset_lineage l WHERE l.asset_id = a.asset_id "
                     "AND l.activity = 'relations.proposed.v1')"
                 ).fetchone()[0]
