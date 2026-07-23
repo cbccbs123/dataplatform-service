@@ -34,9 +34,9 @@ def _vec():
 
 def _make_registered_asset(db, ids: list) -> str:
     """registered + st 임베딩 보유 자산 1건 생성(graph_persist e2e 헬퍼와 동일 패턴)."""
-    from src.dispatch.types import AssetRecord, EmbeddingItem
-    from src.ingest.asset_persist import create_asset, finalize_asset
-    from src.ingest.status import AssetStatus, set_status
+    from processing.dispatch.types import AssetRecord, EmbeddingItem
+    from processing.ingest.asset_persist import create_asset, finalize_asset
+    from processing.ingest.status import AssetStatus, set_status
 
     with db.transaction() as conn:
         aid = create_asset(conn, fs_path=f"/t/{uuid.uuid4().hex}.txt", modality="txt",
