@@ -1,4 +1,4 @@
-"""검색 라우트 (069 US-E FR-E6·A) — 하이브리드 검색 + tier projection·주제 패싯·디버그 뷰(compact/group).
+"""검색 라우트 (069 US-E FR-E6·A) — 하이브리드 검색 + tier projection·주제 패싯·디버그 뷰(compact).
 
 종전 ``portal_api.py`` 의 ``/search`` 핸들러와 그 순수 helper를 그대로 이관한다(동작 불변). ``search_hybrid``·
 ``group_ranked``·``fetch_active_relations_for_asset``·``fetch_access_tiers`` 는 홈에서 직접 import 하고,
@@ -18,7 +18,6 @@ from service.portal.auth import Principal, require_principal
 from service.portal.search_group import group_ranked
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
-from src.relations.graph_query import fetch_active_relations_for_asset
 from src.search.search_filters import parse_search_filters
 from src.search.search_service import search_hybrid
 
@@ -35,9 +34,8 @@ _SEARCH_LIMIT_PER_BUCKET_DEFAULT = 50
 # 풀 상한(요청 남용·OS 부하 방어). size 상한(100)보다 넉넉히 둬 승격 여지를 남긴다.
 _SEARCH_LIMIT_PER_BUCKET_MAX = 500
 
-# 같은 소스(영상)로 묶을 때 쓰는 관계 종류. 같은 영상의 모달리티 간 근접중복/파생만 — 주제(same_domain)는
-# 다른 영상을 잇는 관계라 묶음에서 제외(메가블롭 방지, 2026-06-05 진단으로 확정·sample 보존).
-_SAME_SOURCE_KINDS = ("duplicate_near", "derived_from")
+# compact 뷰 요약 자르기 길이(2026-07-24: summary_chars 파라미터 제거로 고정값).
+_COMPACT_SUMMARY_CHARS = 160
 
 
 def _project_grouped_search(
@@ -146,10 +144,9 @@ def _parse_modalities(modalities: str | None) -> list[str] | None:
     return mods or None
 
 
-# ── 069 T407: 삭제된 sample_search_api 디버그 3종을 /search opt-in 으로 이관 ──────────────
-# 세 뷰(no_cutoff·compact·group_by_relation)는 전부 **기본 off = 기존 grouped 응답 불변**이다.
-# compact/group 뷰는 이미 group_ranked 로 **의료 배제·clearance projection 된 grouped** 위에서 계산한다
-# — 원시 search_hybrid 버킷을 쓰면 의료 유출이므로(헌법 10조) 반드시 정제 후 결과를 입력으로 쓴다.
+# ── 디버그 뷰(no_cutoff·compact) — 기본 off = 기존 grouped 응답 불변 ──────────────
+# 2026-07-24: group_by_relation·summary_chars 제거. compact 는 이미 group_ranked 로 의료 배제·
+# clearance projection 된 grouped 위에서 계산 — 원시 search_hybrid 버킷 사용 시 의료 유출이라 정제 후 입력.
 
 
 def _finite(value: object) -> float:
@@ -169,16 +166,8 @@ def _clip_text(text: str, max_chars: int) -> str:
     return one_line
 
 
-def _stem_name(fn: str) -> str:
-    """파일명에서 확장자/파생 접미사를 떼 '소스 영상' 이름만(.ko.txt/.stt.txt 포함 처리·순수)."""
-    for suf in (".ko.txt", ".stt.txt"):
-        if fn.endswith(suf):
-            return fn[: -len(suf)]
-    return fn.rsplit(".", 1)[0] if "." in fn else fn
-
-
 def _compact_view(
-    grouped: dict[str, list[dict[str, Any]]], query: str, limit: int, summary_max: int
+    grouped: dict[str, list[dict[str, Any]]], query: str, limit: int
 ) -> dict[str, Any]:
     """모달리티 버킷 결과를 한눈에 보기 좋은 단일 랭킹으로 축약한다(디버그·순수).
 
@@ -199,112 +188,13 @@ def _compact_view(
                         "모달리티": modality,
                         "점수": score,
                         "파일명": str(r.get("file_name", "")),
-                        "요약": _clip_text(str(r.get("summary", "")), summary_max),
+                        "요약": _clip_text(str(r.get("summary", "")), _COMPACT_SUMMARY_CHARS),
                     },
                 )
             )
     flat.sort(key=lambda t: (-t[0], t[1]))
     top = [{"순위": i, **row} for i, (_s, _id, row) in enumerate(flat[:limit], start=1)]
     return {"query": query, "건수": len(top), "결과": top}
-
-
-def _fetch_same_source_edges(asset_ids: list[str]) -> list[tuple[str, str]]:
-    """히트 자산들 사이의 '같은 소스' 묶음 쌍을 (a,b) 로 조회한다(graph_query seam·의료 배제).
-
-    069 T407: sample 의 순진한 ``WHERE src_node=X`` 단방향 SQL(CR-19·대칭 엣지 dst 접힘 누락) +
-    요청마다 PostgresUtil() 생성(P1-1)을 폐기하고, ``_run_in_db`` 싱글턴 풀 + graph_query 공개
-    read(``fetch_active_relations_for_asset``·대칭 엣지 양방향 정규화)로 교체한다. 히트 집합 내부 이웃 중
-    kind 가 same-source(duplicate_near/derived_from)인 쌍만 모은다. status='active' 만·양끝 의료 배제는
-    seam 이 보장한다.
-
-    트레이드오프(seam 재사용의 대가): sample 원본은 단일 SQL 1회였으나 여기선 asset 수만큼 seam 순차
-    호출(N 왕복). group_by_relation 은 opt-in 디버그 뷰·히트 상한이 작아(size×모달리티) 문제되지 않는다.
-    대량화되면 graph_query 에 다중 asset_id 배치 read 오버로드 추가 검토(069 코드리뷰 2026-07-15 🟡).
-    """
-    ids = [a for a in asset_ids if a]
-    if not ids:
-        return []
-    id_set = set(ids)
-
-    def _run(conn: Any) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
-        for aid in ids:
-            for nb in fetch_active_relations_for_asset(conn, asset_id=aid, status="active"):
-                other = nb.get("asset_id")
-                if nb.get("kind_code") in _SAME_SOURCE_KINDS and other in id_set:
-                    pairs.append((aid, str(other)))
-        return pairs
-
-    return _infra._run_in_db(_run)
-
-
-def _group_by_relation_view(
-    grouped: dict[str, list[dict[str, Any]]], query: str, summary_max: int
-) -> dict[str, Any]:
-    """검색 결과를 '같은 소스 영상' 단위로 묶어 보여준다(graph_edge 관계 기반·디버그).
-
-    같은 영상의 여러 모달리티(이미지·영상·오디오·텍스트)가 한 묶음으로 접힌다. manifest.json 류 허브는
-    제외. 묶음점수=구성원 max, 정렬은 점수 내림차순(동점은 대표 asset_id·결정적·헌법 3조). 입력
-    ``grouped`` 는 이미 의료 배제·projection 된 portal 결과다.
-    """
-    info: dict[str, dict[str, Any]] = {}
-    for modality, rows in grouped.items():
-        for r in rows:
-            aid = str(r.get("asset_id") or "")
-            fn = str(r.get("file_name", ""))
-            if not aid or fn == "manifest.json":
-                continue
-            score = round(_finite(r.get("similarity")), 4)
-            prev = info.get(aid)
-            if prev is None or score > prev["점수"]:
-                info[aid] = {
-                    "asset_id": aid,
-                    "모달리티": modality,
-                    "점수": score,
-                    "파일명": fn,
-                    "요약": _clip_text(str(r.get("summary", "")), summary_max),
-                }
-
-    parent = {a: a for a in info}
-
-    def _find(x: str) -> str:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for a, b in _fetch_same_source_edges(list(info)):
-        if a in parent and b in parent:
-            ra, rb = _find(a), _find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for aid in info:
-        groups.setdefault(_find(aid), []).append(info[aid])
-
-    bundles = []
-    for members in groups.values():
-        members.sort(key=lambda m: (-m["점수"], m["asset_id"]))
-        rep = members[0]
-        bundles.append(
-            {
-                "_rep_id": rep["asset_id"],
-                "묶음점수": rep["점수"],
-                "대표": _stem_name(rep["파일명"]),
-                "요약": rep["요약"],
-                "구성": [
-                    {"모달리티": m["모달리티"], "점수": m["점수"], "파일명": m["파일명"]}
-                    for m in members
-                ],
-            }
-        )
-    bundles.sort(key=lambda bz: (-bz["묶음점수"], bz["_rep_id"]))
-    out = [
-        {"순위": i, **{k: v for k, v in b.items() if k != "_rep_id"}}
-        for i, b in enumerate(bundles, start=1)
-    ]
-    return {"query": query, "묶음수": len(out), "묶음": out}
 
 
 @router.get("/search")
@@ -325,33 +215,16 @@ def search(
     ),
     mode: str = Query("auto", description="검색 모드: auto(기본) | keyword(단어 포함 문서)"),
     file_ext: list[str] | None = Query(None, description="파일 확장자 필터(반복 가능, 예: txt,pdf)"),
-    source_dataset: list[str] | None = Query(
-        None, description="출처 데이터셋 필터(반복 가능: data1~3, wikipedia, youtube, unknown)"
-    ),
     created_from: str | None = Query(None, description="생성일 하한(YYYY-MM-DD 또는 ISO datetime, UTC)"),
     created_to: str | None = Query(None, description="생성일 상한(YYYY-MM-DD 또는 ISO datetime, UTC)"),
     topic: str | None = Query(None, description="주제(topic) 정확 일치 필터(056·keyword terms)"),
     subtopic: str | None = Query(None, description="세부주제(subtopic) 정확 일치 필터(056·keyword terms)"),
-    must_include: list[str] | None = Query(
-        None, description="반드시 포함 텀(반복 가능·BM25 must·전체 코퍼스 기준·057 FR-202)"
-    ),
-    must_exclude: list[str] | None = Query(
-        None, description="반드시 제외 텀(반복 가능·BM25 must_not·전체 코퍼스 기준·057 FR-202)"
-    ),
     no_cutoff: bool = Query(
         False, description="true 면 모달리티별 적합도 컷오프를 무시(약한 매칭까지 노출·027 디버그·기본 off)"
     ),
     compact: bool = Query(
         False,
         description="true 면 전 모달리티를 합쳐 점수순 top-K(=size)로 축약(순위·모달리티·점수·파일명·요약·기본 off)",
-    ),
-    group_by_relation: bool = Query(
-        False,
-        description="true 면 관계(graph_edge active duplicate_near/derived_from)로 같은 소스 영상의 "
-        "모달리티를 한 묶음으로 접어 반환(compact 보다 우선·기본 off)",
-    ),
-    summary_chars: int = Query(
-        160, ge=0, le=2000, description="compact/묶음 뷰 요약 최대 글자수(0=자르지 않음·off 뷰엔 무영향)"
     ),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
@@ -366,7 +239,6 @@ def search(
     try:
         search_filters = parse_search_filters(
             file_ext=file_ext,
-            source_dataset=source_dataset,
             created_from=created_from,
             created_to=created_to,
             topic=topic,
@@ -374,11 +246,6 @@ def search(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"필터 파라미터 형식 오류: {exc}") from exc
-
-    # 057 FR-202: 반복 쿼리 파라미터(must_include/must_exclude)를 strip·빈문자열 제거·순서 보존으로
-    # 정규화(미지정 None → []). 빈 리스트면 OS 본문이 바이트 동일(하위호환·회귀 0).
-    inc_terms = [s for s in ((t or "").strip() for t in (must_include or [])) if s]
-    exc_terms = [s for s in ((t or "").strip() for t in (must_exclude or [])) if s]
 
     # 풀 하한: 요청 풀이 노출 size 보다 얕으면 size 로 끌어올린다(size 계약 보장 + 승격 여지 확보).
     effective_pool = max(limit_per_bucket, size)
@@ -388,9 +255,7 @@ def search(
         limit_per_bucket=effective_pool,
         search_mode=search_mode,
         search_filters=search_filters,
-        must_include=inc_terms,
-        must_exclude=exc_terms,
-        # 069 T407: 디버그 opt-in — 기본 False 라 미지정 시 기존 호출과 동작 불변(027 컷 유지).
+        # 디버그 opt-in — 기본 False 라 미지정 시 기존 호출과 동작 불변(027 컷 유지).
         disable_os_cutoff=no_cutoff,
     )
 
@@ -405,12 +270,9 @@ def search(
 
     grouped, topic_facets = _infra._run_in_db(_project_and_facet)
 
-    # 069 T407(디버그 opt-in·기본 off): group_by_relation > compact 우선순위(sample 현행 보존).
-    # 두 뷰 모두 이미 의료 배제·projection 된 grouped 위에서 계산 → 의료 자산 유출 0(헌법 10조).
-    if group_by_relation:
-        return _group_by_relation_view(grouped, q, summary_chars)
+    # 디버그 opt-in(기본 off): compact 뷰는 이미 의료 배제·projection 된 grouped 위에서 계산(유출 0).
     if compact:
-        return _compact_view(grouped, q, size, summary_chars)
+        return _compact_view(grouped, q, size)
 
     counts = {modality: len(rows) for modality, rows in grouped.items()}
 
@@ -433,7 +295,6 @@ def search(
     if search_filters is not None:
         meta["filters"] = {
             "file_ext": list(search_filters.file_exts),
-            "source_dataset": list(search_filters.source_datasets),
             "created_from": search_filters.created_from.isoformat()
             if search_filters.created_from is not None
             else None,

@@ -287,7 +287,6 @@ class TestSearch(unittest.TestCase):
                 ("q", "회식"),
                 ("file_ext", "txt"),
                 ("file_ext", "pdf"),
-                ("source_dataset", "wikipedia"),
                 ("created_from", "2026-01-01"),
                 ("created_to", "2026-06-30"),
             ],
@@ -295,35 +294,8 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         sf = mock_search.call_args.kwargs["search_filters"]
         self.assertEqual(sf.file_exts, ("pdf", "txt"))
-        self.assertEqual(sf.source_datasets, ("wikipedia",))
         meta_filters = resp.json()["meta"]["filters"]
         self.assertEqual(meta_filters["file_ext"], ["pdf", "txt"])
-        self.assertEqual(meta_filters["source_dataset"], ["wikipedia"])
-
-    @patch("service.api.routes_search.search_hybrid")
-    def test_search_passes_must_include_exclude(self, mock_search) -> None:
-        # 057 FR-202: 반복 쿼리 파라미터 must_include/must_exclude 를 search_hybrid 에 배선한다.
-        mock_search.return_value = _fake_search_result()
-        resp = self.client.get(
-            "/search",
-            params=[
-                ("q", "충전"),
-                ("must_include", "배터리"),
-                ("must_include", "고속"),
-                ("must_exclude", "광고"),
-            ],
-        )
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(mock_search.call_args.kwargs["must_include"], ["배터리", "고속"])
-        self.assertEqual(mock_search.call_args.kwargs["must_exclude"], ["광고"])
-
-    @patch("service.api.routes_search.search_hybrid")
-    def test_search_no_lexical_filters_forwards_empty(self, mock_search) -> None:
-        # 미지정이면 빈 리스트로 전달(하위호환 — OS 본문 무변경).
-        mock_search.return_value = _fake_search_result()
-        self.client.get("/search", params={"q": "충전", "size": 5})
-        self.assertEqual(mock_search.call_args.kwargs["must_include"], [])
-        self.assertEqual(mock_search.call_args.kwargs["must_exclude"], [])
 
     @patch("service.api.routes_search.search_hybrid")
     def test_search_invalid_date_returns_422(self, mock_search) -> None:
@@ -334,9 +306,9 @@ class TestSearch(unittest.TestCase):
         self.assertEqual(resp.status_code, 422)
         mock_search.assert_not_called()
 
-    # ── 069 T407: sample_search_api 디버그 3종을 portal /search opt-in 으로 이관 ──────
-    # 전부 기본 off = 기존 응답 불변. no_cutoff 는 search_hybrid 배선, compact/group_by_relation 은
-    # 이미 group_ranked 로 의료 배제·projection 된 grouped 결과 위에서 축약/묶음 뷰를 만든다.
+    # ── 디버그 뷰(no_cutoff·compact) opt-in — 기본 off = 기존 응답 불변 ──────────────
+    # no_cutoff 는 search_hybrid 배선, compact 는 group_ranked 로 의료 배제·projection 된 grouped 위 축약.
+    # (2026-07-24: group 뷰·summary_chars 옵션 제거.)
 
     @patch("service.api.routes_search.search_hybrid")
     def test_no_cutoff_default_off_not_disabled(self, mock_search) -> None:
@@ -380,82 +352,6 @@ class TestSearch(unittest.TestCase):
             self.assertIn("요약", r)
         # 의료 자산도 이제 축약 뷰에 노출된다(도메인 제외 없음).
         self.assertIn("m.png", [r["파일명"] for r in rows])
-
-    @patch("service.api.routes_search.fetch_active_relations_for_asset")
-    @patch("service.api.routes_search.search_hybrid")
-    def test_group_by_relation_folds_same_source(self, mock_search, mock_edges) -> None:
-        # group_by_relation=true → 같은 소스 엣지(active duplicate_near/derived_from)로 묶음.
-        # a1(text)·v1(video)이 duplicate_near 로 이어져 한 묶음, a2 는 별도 묶음.
-        result = {
-            "query": "회식",
-            "results": {
-                "text_documents": [
-                    {"id": "a1", "similarity": 0.9, "file_uri": "/x/a1.txt", "summary": "s1"},
-                    {"id": "a2", "similarity": 0.6, "file_uri": "/x/a2.txt", "summary": "s2"},
-                ],
-                "video": [
-                    {"id": "v1", "similarity": 0.8, "file_uri": "/x/회식.mp4", "summary": "vs"},
-                ],
-            },
-            "meta": {},
-        }
-        mock_search.return_value = result
-
-        def _neighbors(_conn, *, asset_id, status="active"):
-            # a1↔v1 은 same-source(duplicate_near·대칭 엣지 양방향), 그 외 이웃 없음.
-            if asset_id == "a1":
-                return [{"asset_id": "v1", "kind_code": "duplicate_near"}]
-            if asset_id == "v1":
-                return [{"asset_id": "a1", "kind_code": "duplicate_near"}]
-            return []
-
-        mock_edges.side_effect = _neighbors
-        body = self.client.get(
-            "/search", params={"q": "회식", "group_by_relation": "true"}
-        ).json()
-        self.assertEqual(body["query"], "회식")
-        self.assertIn("묶음", body)
-        self.assertEqual(body["묶음수"], 2)  # {a1,v1} + {a2}
-        # graph_query seam(대칭 양방향)을 경유했는지 — 순진한 단방향 SQL 우회 금지(CR-19).
-        self.assertTrue(mock_edges.called)
-        # 묶음점수 내림차순: {a1(0.9),v1(0.8)} 대표 0.9 먼저, {a2 0.6} 뒤.
-        first = body["묶음"][0]
-        self.assertEqual(first["묶음점수"], 0.9)
-        self.assertEqual({m["파일명"] for m in first["구성"]}, {"a1.txt", "회식.mp4"})
-        second = body["묶음"][1]
-        self.assertEqual([m["파일명"] for m in second["구성"]], ["a2.txt"])
-
-    @patch("service.api.routes_search.fetch_active_relations_for_asset")
-    @patch("service.api.routes_search.search_hybrid")
-    def test_group_by_relation_priority_over_compact(self, mock_search, mock_edges) -> None:
-        # 조합 우선순위(sample 보존): group_by_relation 이 compact 보다 우선.
-        mock_search.return_value = _fake_search_result()
-        mock_edges.return_value = []
-        body = self.client.get(
-            "/search",
-            params={"q": "회식", "compact": "true", "group_by_relation": "true"},
-        ).json()
-        self.assertIn("묶음", body)   # group 뷰
-        self.assertNotIn("결과", body)  # compact 뷰 아님
-
-    @patch("service.api.routes_search.fetch_active_relations_for_asset")
-    @patch("service.api.routes_search.search_hybrid")
-    def test_group_by_relation_excludes_manifest_hub(self, mock_search, mock_edges) -> None:
-        # manifest.json 허브는 묶음에서 제외(sample 보존).
-        result = {
-            "query": "q",
-            "results": {
-                "text_documents": [
-                    {"id": "a1", "similarity": 0.9, "file_uri": "/x/a1.txt", "summary": "s1"},
-                    {"id": "h1", "similarity": 0.5, "file_uri": "/x/manifest.json", "summary": ""},
-                ],
-            },
-            "meta": {},
-        }
-        mock_search.return_value = result
-        mock_edges.return_value = []
-        body = self.client.get("/search", params={"q": "q", "group_by_relation": "true"}).json()
-        self.assertEqual(body["묶음수"], 1)  # a1 만(manifest 제외)
 
 
 class TestAssetDetail(unittest.TestCase):
