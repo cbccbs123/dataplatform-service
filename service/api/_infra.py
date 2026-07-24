@@ -43,6 +43,8 @@ _DB_LOCK = threading.Lock()
 def _get_db() -> object:
     """앱 수명 DB 싱글턴을 돌려준다(최초 호출 시 풀 1회 생성 — 069 P1-1)."""
     global _DB_SINGLETON
+    # 이중 검사 락(double-checked locking): 락 밖 첫 검사로 이미 생성된 정상 경로의 락 경합을 피하고,
+    # 락 안에서 다시 검사해 경쟁 스레드가 풀을 중복 생성(2개)하지 않게 한다.
     if _DB_SINGLETON is None:
         with _DB_LOCK:
             if _DB_SINGLETON is None:
@@ -122,6 +124,7 @@ def _user_id_from_request(request: Request) -> str:
 
     기록(감사) 용 식별이라 인증 실패가 응답을 막아선 안 된다 — 어떤 예외든 삼키고 anonymous 로.
     실제 접근 인가는 라우트의 ``require_principal`` 이 이미 책임진다(여기선 기록 라벨링만).
+    미들웨어는 라우트 의존성 주입 전에 돌아 route 의 Principal 을 못 받으므로 토큰을 여기서 다시 파싱한다.
     """
     auth = request.headers.get("authorization") or ""
     if auth.lower().startswith("bearer "):

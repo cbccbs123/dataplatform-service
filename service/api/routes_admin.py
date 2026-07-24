@@ -56,8 +56,8 @@ def asset_lineage(
     """자산 처리 이력(계보)을 발생 시각순으로 반환한다(013 US2·FR-004).
 
     조회 전용(``_run_in_db`` idempotent) — ``query_asset_lineage`` 가 ``asset_lineage`` 를
-    시간순으로 끌어온다. 자산 데이터·스키마 쓰기 0·신규 LLM 0. 의료(PHI)는 제외(헌법 10조·FR-014).
-    미존재/의료/이력 없음은 빈 ``activities`` 로 200 반환(의도).
+    시간순으로 끌어온다. 자산 데이터·스키마 쓰기 0·신규 LLM 0. 도메인 제외 없음(2026-07-23·FR-014 폐지).
+    미존재/이력 없음은 빈 ``activities`` 로 200 반환(의도·도메인 제외 없음).
     """
     activities = _infra._run_in_db(lambda conn: query_asset_lineage(conn, asset_id))
     return {"asset_id": asset_id, "activities": activities}
@@ -151,7 +151,7 @@ def lineage_feed(
     offset: int = Query(0, ge=0),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """기간 내 전 자산 계보 피드(시간역순·페이징·013 FR-009b). 조회 전용·결정적·LLM 0·의료 제외."""
+    """기간 내 전 자산 계보 피드(시간역순·페이징·013 FR-009b). 조회 전용·결정적·LLM 0·도메인 제외 없음."""
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
     return _infra._run_in_db(
         lambda conn: query_lineage_feed(
@@ -168,7 +168,7 @@ def lineage_timeline_endpoint(
     group_by: str | None = Query(None, description="멀티시리즈 분할: activity | modality | status(미지정=단일)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """계보 시계열(누적 막대 차트 1회·access timeline 과 대칭). 의료 제외·결정적·LLM 0.
+    """계보 시계열(누적 막대 차트 1회·access timeline 과 대칭). 결정적·LLM 0·도메인 제외 없음.
 
     ``group_by``(activity/modality/status) 주면 멀티시리즈, 미지정이면 단일 시리즈. interval 검증은
     ``_validated_interval`` Depends(422).
@@ -189,7 +189,7 @@ def asset_stats_endpoint(
         False, description="운영 5버킷 집계(by_snapshot_bucket) 동반(계보 현황 화면·054·FR-201/202)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """전체 자산 집계(FSM status·modality·domain·file_ext·date별·총계·013 FR-009e). 의료 제외·결정적·LLM 0.
+    """전체 자산 집계(FSM status·modality·domain·file_ext·date별·총계·013 FR-009e). 결정적·LLM 0·도메인 제외 없음.
 
     ``snapshot_buckets=true``(054·계보 현황) 지정 시 응답에 ``by_snapshot_bucket``(운영 5버킷
     count·``sum==total``·FR-201/202)이 추가된다. 미지정(기본 False)이면 기존 응답이 완전히 불변이다.
@@ -219,7 +219,7 @@ def assets_list(
     offset: int = Query(0, ge=0),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """자산 목록(FSM·modality·domain·file_ext·날짜 필터·페이징·013 FR-009f). 의료 제외·created_at 역순·LLM 0.
+    """자산 목록(FSM·modality·domain·file_ext·날짜 필터·페이징·013 FR-009f). 도메인 제외 없음·created_at 역순·LLM 0.
 
     ``with_content=true`` 면 행마다 요약(summary)·키워드(keywords) 동반. ``snapshot_bucket``(054·FR-103)
     지정 시 FSM status 를 운영 5버킷으로 롤업해 필터(``status`` 무시·C3). 화이트리스트 검증(400)은 이
@@ -249,7 +249,7 @@ def modality_detail_endpoint(
     to: str | None = Query(None, alias="to", description="생성일 상한(exclusive)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """모달리티 드릴다운 집계(보완 v6) — 해당 모달리티의 확장자·상태·일자별 분포 + 총계. 의료 제외·결정적·LLM 0."""
+    """모달리티 드릴다운 집계(보완 v6) — 해당 모달리티의 확장자·상태·일자별 분포 + 총계. 결정적·LLM 0·도메인 제외 없음."""
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
     return _infra._run_in_db(lambda conn: modality_detail(conn, modality, since=since, until=until))
 
@@ -263,7 +263,7 @@ def modality_overview_endpoint(
     limit: int = Query(50, ge=1, le=200),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """모달리티 현황 BFF 1회 응답(057 FR-302) — ``{detail, timeline, first_page}``. 조회 전용·의료 제외·LLM 0.
+    """모달리티 현황 BFF 1회 응답(057 FR-302) — ``{detail, timeline, first_page}``. 조회 전용·도메인 제외 없음·LLM 0.
 
     interval 화이트리스트 위반은 422(``_validated_interval``). **라우트 순서(C8)**: 리터럴 3세그 경로라
     catch-all 1세그 ``/admin/assets/{asset_id}`` 보다 위(구체 경로)에 둔다.
@@ -283,7 +283,7 @@ def asset_timeline_endpoint(
         None, description="멀티시리즈 분할: modality | status | domain | file_ext(미지정=단일)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """자산 생성 일자 추이(보완 v6·계보 timeline 과 대칭). 의료 제외·결정적·LLM 0.
+    """자산 생성 일자 추이(보완 v6·계보 timeline 과 대칭). 결정적·LLM 0·도메인 제외 없음.
 
     ``group_by``(modality/status/domain/file_ext) 주면 멀티시리즈, 미지정이면 단일. interval 검증은
     ``_validated_interval`` Depends(422).
@@ -298,7 +298,7 @@ def asset_timeline_endpoint(
 
 
 # 054·FR-301: 계보 현황 목록에서 자산 1건으로 드릴다운(관리자 관점). 사용자용 루트 ``GET /assets/{id}`` 와
-# 동일한 ``fetch_asset_detail`` 노출 게이트(없음/비registered/의료 → 404)를 재사용한다(자산 데이터 노출 0).
+# 동일한 ``fetch_asset_detail`` 노출 게이트(없음/비registered → 404)를 재사용한다(도메인 제외 없음·자산 데이터 노출 0).
 # **라우트 순서(C8)**: 위 modality/{modality}·{asset_id}/lineage 를 먼저 선언해 이 catch-all 1세그가
 # 그것들을 가리지 않게 — 그래서 이 라우트를 뒤에 둔다.
 @router.get("/admin/assets/{asset_id}")
@@ -306,8 +306,8 @@ def admin_asset_detail(
     asset_id: str,
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """관리자 자산 1건 상세(계보 현황 드릴다운·FR-301). 노출 게이트·의료 제외는 ``fetch_asset_detail``
-    책임(없음/비registered/의료 → None → 404). 조회 전용·LLM 0. clearance 로 ext_meta tier omit(042)."""
+    """관리자 자산 1건 상세(계보 현황 드릴다운·FR-301). 노출 게이트는 ``fetch_asset_detail``
+    책임(없음/비registered → None → 404·도메인 제외 없음). 조회 전용·LLM 0. clearance 로 ext_meta tier omit(042)."""
     detail = _infra._run_in_db(
         lambda conn: fetch_asset_detail(
             conn, asset_id=asset_id, clearance=principal.clearance))
@@ -324,7 +324,7 @@ def dashboard_summary_endpoint(
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
     """운영 대시보드 집계 1회 응답(013 운영 후속·052 번들) — access·lineage·asset 3도메인 ×
-    전체/오늘/월별/시간별. 조회 전용·의료 제외·결정적·LLM 0·마이그레이션 0.
+    전체/오늘/월별/시간별. 조회 전용·결정적·LLM 0·마이그레이션 0·도메인 제외 없음.
 
     ``monthly_interval``(057 FR-303) — 월 범위엔 day|month 만 유효(hour 부적합) → 그 외 422.
     (TIMELINE 화이트리스트와 다른 별도 검증이라 ``_validated_interval`` 미적용.)
@@ -345,7 +345,7 @@ def relations_proposed_summary_endpoint(
     interval: Annotated[str, Depends(_infra._validated_interval)] = "day",
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """관계 제안(relations.proposed) distinct 자산 수 + 발생 추이 1회 응답(057 FR-204). 조회 전용·의료 제외·LLM 0.
+    """관계 제안(relations.proposed) distinct 자산 수 + 발생 추이 1회 응답(057 FR-204). 조회 전용·도메인 제외 없음·LLM 0.
 
     ``COUNT(DISTINCT)`` 전기간 집계(``relation_proposed_summary``·lineage occurred_at). interval 검증은
     ``_validated_interval`` Depends(422).
@@ -376,7 +376,7 @@ def relations_list(
 ) -> dict[str, Any]:
     """관계 검토 큐/내역을 status별 페이징 조회한다(FR-101/102/103 + G7 검색·필터·기간). 조회 전용·LLM 0.
 
-    ``status`` 화이트리스트(``_REVIEW_STATUSES``) 위반은 400. 의료(PHI) 자산 엣지 제외(헌법 10조).
+    ``status`` 화이트리스트(``_REVIEW_STATUSES``) 위반은 400. (도메인 제외 없음·2026-07-23 — 의료 엣지 포함·복귀 시 재도입.)
     G7 선택 필터: min>max·conf∉[0,1]·date_on∉{created,reviewed}·from>to → 400, 형식오류 → 422(_parse_dt).
     date_col 결정: date_on 명시 시 매핑, 생략 시 status별 자동(proposed→created_at·그외→reviewed_at).
     """

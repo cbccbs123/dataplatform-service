@@ -28,7 +28,7 @@ router = APIRouter()
 _EXCLUDE_DOMAINS: frozenset[str] = frozenset()
 
 # search_hybrid 의 버킷당 후보 풀 **기본값**. /search 의 limit_per_bucket 로 요청마다 덮어쓴다.
-# 응답은 모달리티별 top-N(size)으로 자르지만 풀은 그보다 깊게 받아야 (a)의료 배제 잔여 (b)074 검증
+# 응답은 모달리티별 top-N(size)으로 자르지만 풀은 그보다 깊게 받아야 (a)도메인 배제(dormant) 잔여 (b)074 검증
 # 드롭 후 승격 여지가 생긴다 — 핸들러가 max(풀, size)로 하한을 걸어 풀<size 회귀를 막는다.
 _SEARCH_LIMIT_PER_BUCKET_DEFAULT = 50
 # 풀 상한(요청 남용·OS 부하 방어). size 상한(100)보다 넉넉히 둬 승격 여지를 남긴다.
@@ -49,6 +49,7 @@ def _project_grouped_search(
     ``summary`` 를 mini ext_meta 로 ``project_ext_meta`` 에 넘김 — 미달 시 행에서 ``summary`` 키 제거.
     OpenSearch 색인은 변경 없음(API 응답 단계만).
     """
+    # 도메인별 access_tier 를 메모이제이션 — 같은 도메인 행이 여럿이면 fetch_access_tiers DB 조회를 1회로 묶는다.
     tiers_cache: dict[str, dict[str, str]] = {}
     out: dict[str, list[dict[str, Any]]] = {}
     for modality, rows in grouped.items():
@@ -75,7 +76,7 @@ def _project_grouped_search(
 
 
 def _search_topic_facet(grouped: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
-    """검색 결과(의료 배제·top-N)의 자산들이 공유하는 주제 패싯을 집계한다(056 FR-503·US3).
+    """검색 결과(top-N)의 자산들이 공유하는 주제 패싯을 집계한다(056 FR-503·US3).
 
     각 결과 행에 이미 실린 **색인 topic_pairs**(059)로 ``topic_ko`` 별 distinct 결과-자산 수와, 그 아래
     실제 부모의 ``subtopic_ko`` 별 결과-자산 수(nested)를 센다. 라이브 투영·자산당 DB 호출(N+1) 없이
@@ -145,8 +146,8 @@ def _parse_modalities(modalities: str | None) -> list[str] | None:
 
 
 # ── 디버그 뷰(no_cutoff·compact) — 기본 off = 기존 grouped 응답 불변 ──────────────
-# 2026-07-24: group_by_relation·summary_chars 제거. compact 는 이미 group_ranked 로 의료 배제·
-# clearance projection 된 grouped 위에서 계산 — 원시 search_hybrid 버킷 사용 시 의료 유출이라 정제 후 입력.
+# 2026-07-24: group_by_relation·summary_chars 제거. compact 는 이미 group_ranked + clearance projection
+# 된 grouped 위에서 계산 — 원시 search_hybrid 버킷 사용 시 tier 미투영 요약 유출이라 정제 후 입력(도메인 배제는 dormant).
 
 
 def _finite(value: object) -> float:
@@ -172,8 +173,8 @@ def _compact_view(
     """모달리티 버킷 결과를 한눈에 보기 좋은 단일 랭킹으로 축약한다(디버그·순수).
 
     각 행은 순위·모달리티·합산 점수(similarity)·파일명·요약만 남긴다. 점수 내림차순, 동점은 asset_id
-    오름차순(결정적·헌법 3조). 전 모달리티 합쳐 상위 ``limit`` 건만. 입력 ``grouped`` 는 이미 의료 배제·
-    projection 된 portal 결과라 의료 유출이 없다.
+    오름차순(결정적·헌법 3조). 전 모달리티 합쳐 상위 ``limit`` 건만. 입력 ``grouped`` 는 이미 clearance
+    projection 된 portal 결과라 tier 미투영 유출이 없다(도메인 배제는 dormant).
     """
     flat: list[tuple[float, str, dict[str, Any]]] = []
     for modality, rows in grouped.items():
@@ -209,7 +210,7 @@ def search(
         ge=1,
         le=_SEARCH_LIMIT_PER_BUCKET_MAX,
         description=(
-            "버킷당 후보 풀 깊이(top-N=size 캡 이전). 크게 줄수록 의료배제 잔여·074 승격 여지↑, "
+            "버킷당 후보 풀 깊이(top-N=size 캡 이전). 크게 줄수록 컷·도메인배제(dormant) 잔여·074 승격 여지↑, "
             "OS 부하↑. 실제 풀 = max(이 값, size)"
         ),
     ),
@@ -230,7 +231,7 @@ def search(
 ) -> dict[str, Any]:
     """006 하이브리드 검색을 **모달리티별 그룹**으로 반환한다(FR-001/002/003 + 056 FR-503).
 
-    내부: ``search_hybrid``(신규 LLM 호출 0, 006 seam) → ``group_ranked``(모달리티별 독립 랭킹·의료 배제,
+    내부: ``search_hybrid``(신규 LLM 호출 0, 006 seam) → ``group_ranked``(모달리티별 독립 랭킹·도메인 배제 dormant,
     FR-014). 모달리티 간 점수 척도가 비교 불가라 단일 랭킹으로 합치지 않고 섹션별로 제공한다. 섹션별
     top-N(``size``), 페이징 없음(전체 코퍼스 keyset 페이징은 006 재설계 후속).
     """
@@ -270,7 +271,7 @@ def search(
 
     grouped, topic_facets = _infra._run_in_db(_project_and_facet)
 
-    # 디버그 opt-in(기본 off): compact 뷰는 이미 의료 배제·projection 된 grouped 위에서 계산(유출 0).
+    # 디버그 opt-in(기본 off): compact 뷰는 이미 clearance projection 된 grouped 위에서 계산(tier 유출 0·도메인 배제 dormant).
     if compact:
         return _compact_view(grouped, q, size)
 
