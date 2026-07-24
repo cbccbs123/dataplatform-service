@@ -26,7 +26,7 @@ _EXT_EXPR = ext_expr("a.")
 
 
 def query_asset_lineage(conn: Any, asset_id: str, *, limit: int = 500) -> list[dict]:
-    """자산의 활동을 발생 시각순으로 반환(의료 제외) — [{activity, agent, used, generated, occurred_at}]."""
+    """자산의 활동을 발생 시각순으로 반환(도메인 제외 없음·2026-07-23) — [{activity, agent, used, generated, occurred_at}]."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT al.activity, al.agent, al.used, al.generated, al.occurred_at "
@@ -44,7 +44,7 @@ def query_lineage_feed(
     modality: str | None = None, status: str | None = None, file_ext: str | None = None,
     limit: int = 50, offset: int = 0,
 ) -> dict[str, Any]:
-    """기간 내 전 자산 계보 피드(의료 제외·occurred_at DESC, lineage_id DESC·페이징·FR-009b).
+    """기간 내 전 자산 계보 피드(도메인 제외 없음·occurred_at DESC, lineage_id DESC·페이징·FR-009b).
 
     필터: 기간(since/until)·활동(activity)·**자산 차원**(modality·status·file_ext — asset 조인).
     대시보드 슬라이스용.
@@ -108,7 +108,7 @@ def _lineage_filter(since: Any, until: Any, activity: str | None) -> tuple[str, 
 
 def lineage_stats(conn: Any, *, since: Any = None, until: Any = None,
                   activity: str | None = None) -> dict[str, Any]:
-    """계보 집계(차트·KPI용·FR-009g 보완) — 총계 + 활동별·일별·modality·status·file_ext별. 의료 제외·결정적."""
+    """계보 집계(차트·KPI용·FR-009g 보완) — 총계 + 활동별·일별·modality·status·file_ext별. 결정적·도메인 제외 없음."""
     extra, params = _lineage_filter(since, until, activity)
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) " + _LINEAGE_FROM + extra, params)
@@ -137,7 +137,7 @@ def lineage_timeline(conn: Any, *, since: Any = None, until: Any = None, activit
                      interval: str = "day", group_by: str | None = None) -> dict[str, Any]:
     """계보 시계열(차트용·access timeline 과 대칭). group_by(activity/modality/status) 주면 멀티시리즈.
 
-    의료 제외·결정적(시리즈 key ASC·버킷 ASC). group_by 미지정이면 단일 시리즈({interval, buckets}).
+    결정적(시리즈 key ASC·버킷 ASC)·도메인 제외 없음. group_by 미지정이면 단일 시리즈({interval, buckets}).
     """
     trunc = interval if interval in TIMELINE_INTERVALS else "day"
     extra, params = _lineage_filter(since, until, activity)
@@ -157,7 +157,7 @@ def lineage_timeline(conn: Any, *, since: Any = None, until: Any = None, activit
 
 def relation_proposed_summary(conn: Any, *, since: Any = None, until: Any = None,
                               interval: str = "day") -> dict[str, Any]:
-    """관계 제안(relations.proposed.v1) distinct 자산 수 + 발생 추이(057 FR-204). 의료 제외·결정적·LLM 0.
+    """관계 제안(relations.proposed.v1) distinct 자산 수 + 발생 추이(057 FR-204). 결정적·LLM 0·도메인 제외 없음.
 
     admin 관계-제안 화면이 ``getLineageFeed(limit:200)`` 원시 피드를 프론트에서 distinct/버킷팅하던 것을
     서버로 이관한다 — 200 초과 시 과소집계되던 **실버그**를 ``COUNT(DISTINCT al.asset_id)`` 전기간 집계로
@@ -170,8 +170,8 @@ def relation_proposed_summary(conn: Any, *, since: Any = None, until: Any = None
 
     기간(since/until)은 **occurred_at**(제안 발생 시각) 기준·to exclusive. interval 은 TIMELINE_INTERVALS
     화이트리스트(f-string 안전·그 외 값은 'day' 폴백; API 계층이 422 로 선처리). SQL 등장 순서 =
-    파라미터 순서(activity → occurred_since → occurred_until)로 순서 불변식을 지킨다. 의료 제외는
-    ``_LINEAGE_FROM`` 조인 재사용(헌법 10조).
+    파라미터 순서(activity → occurred_since → occurred_until)로 순서 불변식을 지킨다.
+    (도메인 제외 없음·2026-07-23 — ``_LINEAGE_FROM`` 은 ``WHERE TRUE`` 앵커만 둔다.)
     """
     trunc = interval if interval in TIMELINE_INTERVALS else "day"
     where = _LINEAGE_FROM + " AND al.activity = %s"

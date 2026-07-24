@@ -134,7 +134,7 @@ def asset_stats(conn: Any, *, since: Any = None, until: Any = None,
 def _snapshot_bucket_counts(cur: Any, where: str, period_params: list[Any]) -> list[dict[str, Any]]:
     """운영 5버킷 count 를 단일 FILTER 쿼리로 뽑아 ``_SNAPSHOT_BUCKETS`` 순서로 반환(0 포함).
 
-    ``where``/``period_params`` = total 과 동일한 ``_period_clause``(의료 제외 + created_at 기간) →
+    ``where``/``period_params`` = total 과 동일한 ``_period_clause``(created_at 기간·도메인 제외 없음) →
     버킷 자산집합이 total 과 같은 스코프라 ``sum==total`` 이 보장된다. 서브쿼리에서 자산별로
     관계 제안 존재 여부(rp)를 EXISTS 로 계산(FR-202: alltime·occurred_at 기간 없음)한 뒤 바깥에서
     FILTER 로 5버킷을 한 번에 센다. status IN 리터럴은 ``_PROCESSING_STATUSES`` 고정 SQL(인젝션 안전).
@@ -166,7 +166,7 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
                  created_from: Any = None, created_to: Any = None,
                  snapshot_bucket: str | None = None, relation_scope: str = "period",
                  limit: int = 50, offset: int = 0, with_content: bool = False) -> dict[str, Any]:
-    """자산 목록(FSM 단계·modality·domain·file_ext·날짜 필터·페이징·의료 제외·created_at DESC·FR-009f).
+    """자산 목록(FSM 단계·modality·domain·file_ext·날짜 필터·페이징·도메인 제외 없음·created_at DESC·FR-009f).
 
     각 행은 ``file_ext``(fs_path 확장자·057 FR-104·by_file_ext 집계와 동일 파생)를 포함한다 —
     프론트가 파일명을 다시 파싱하지 않도록 표시필드를 하향(하위호환 필드 추가).

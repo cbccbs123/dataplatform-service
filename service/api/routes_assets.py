@@ -52,7 +52,7 @@ def unclassified_assets(
     """주제 미부여('미분류') 자산 페이징 — 자산목록 파일탐색기의 최상위 '미분류' 폴더(070).
 
     주제 트리(``/topics``)는 ``asset_topic`` 조인이라 주제 정본이 없는 자산(분류 실패·무내용)을 누락한다.
-    자산을 '빠짐없이' 보이려면 이 엔드포인트로 미분류를 회수한다. 조회 전용·의료 제외·LLM 0.
+    자산을 '빠짐없이' 보이려면 이 엔드포인트로 미분류를 회수한다. 조회 전용·도메인 제외 없음·LLM 0.
     **라우트 순서**: ``/assets/{asset_id}`` catch-all 보다 먼저 등록해야 'unclassified' 가 asset_id 로
     오매칭되지 않는다(이 위치 유지).
     """
@@ -66,7 +66,7 @@ def asset_detail(
 ) -> dict[str, Any]:
     """자산 1건 상세(메타·임베딩 채널 요약·관계 미니뷰)를 반환한다(FR-004/005/006 + 056 FR-501).
 
-    노출 게이트(FR-014)는 ``fetch_asset_detail`` 이 책임진다 — 없음/비registered/의료면 None → 404.
+    노출 게이트는 ``fetch_asset_detail`` 이 책임진다 — 없음/비registered면 None → 404. (도메인 제외 없음·2026-07-23·FR-014 폐지)
     065 FR-402: 노출 통과 자산에 자기주제 정본 렌즈(``topics``·``same_topic_groups``)를 같은 읽기
     트랜잭션에서 함께 싣는다(신규 LLM 0). 게이트 미통과(None)면 주제 seam 미호출.
     """
@@ -91,7 +91,7 @@ def topics_list(
 ) -> dict[str, Any]:
     """주제 목록(topic→subtopic 2단계·주제별 자산 수)을 반환한다(065 FR-402·US2). 조회 전용·LLM 0.
 
-    ``list_topics`` 가 자기주제 정본(``asset_topic``·의료 제외)의 ``(topic_ko, subtopic_ko)`` 별 distinct
+    ``list_topics`` 가 자기주제 정본(``asset_topic``·도메인 제외 없음)의 ``(topic_ko, subtopic_ko)`` 별 distinct
     자산 수를 결정적 정렬(topic_ko asc→subtopic_ko asc)로 집계한다. 057 FR-105: 각 행에
     ``topic_asset_count``(주제 전체 distinct 자산 수) 동반(하위호환 필드).
     """
@@ -110,7 +110,7 @@ def topic_assets(
     offset: int = Query(0, ge=0),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """특정 주제에 속한 자산을 페이징 조회한다(065 FR-402·US2). 조회 전용·의료 제외·LLM 0.
+    """특정 주제에 속한 자산을 페이징 조회한다(065 FR-402·US2). 조회 전용·도메인 제외 없음·LLM 0.
 
     ``assets_in_topic`` 이 그 주제의 자기주제 정본(``asset_topic``) 자산을 distinct·``asset_id asc`` 결정적
     정렬로 페이징한다. ``subtopic`` 미지정=topic 하위 전체·``unassigned=true``='기타'(IS NULL)만·
@@ -169,7 +169,7 @@ def download(
 ) -> StreamingResponse:
     """단일 자산 원본을 스트리밍한다 — HTTP ``Range`` 부분 요청(206) 지원(FR-007/009).
 
-    1. ``resolve_download_target`` 노출 게이트(registered·비의료) 통과 → None → 404.
+    1. ``resolve_download_target`` 노출 게이트(registered — 도메인 제외 없음·2026-07-23) 통과 → None → 404.
     2. 원본 파일 존재 확인 → 없거나 접근 불가면 410(FR-009).
     3. ``Range`` 헤더 있으면 ``parse_range_header`` 로 구간 산출 → 206 + ``Content-Range``; 범위 위반 → 416.
     바이트 산출은 디스크 실제 크기 기준. ``Accept-Ranges: bytes`` 항상 고지.
@@ -225,7 +225,7 @@ def asset_thumbnail(
 ) -> Response:
     """이미지·영상 자산의 축소 썸네일(JPEG)을 반환한다(057-후속·멀티모달 시각 미리보기). 조회 전용.
 
-    1. ``resolve_download_target`` 노출 게이트(registered·**비의료**·FR-014) → None → 404(의료=PHI 차단).
+    1. ``resolve_download_target`` 노출 게이트(registered) → None → 404. (2026-07-23 도메인 제외 전면 제거 — 의료도 노출·3년차 복귀 시 재도입.)
     2. 이미지·영상이 아니면 404(오디오/텍스트/unknown 은 시각 표현 없음).
     3. 원본 부재/접근 불가 → 410(FR-009). 생성 실패 → 404.
     ``cached_thumbnail`` 은 디스크 캐시 경유(generate-once·크기별) — 첫 요청만 생성·저장, 이후 캐시 서빙.
@@ -263,7 +263,7 @@ def bundle(
     """
 
     def _work(conn: Any) -> list[dict[str, Any]] | None:
-        # seed 게이트: 노출 불가(의료/비registered/없음) seed → None 신호 → 404.
+        # seed 게이트: 노출 불가(비registered/없음) seed → None 신호 → 404. (도메인 제외 없음·2026-07-23)
         if resolve_download_target(conn, asset_id=asset_id) is None:
             return None
         return collect_bundle_assets(conn, seed_asset_id=asset_id)

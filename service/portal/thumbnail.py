@@ -7,8 +7,8 @@
 - **영상**: cv2 로 **대표 프레임 1개**(1초 지점·검은 첫 프레임 회피·결정적) 추출 후 동일 축소.
 - **오디오/텍스트/unknown**: 시각 표현이 없어 ``None`` → 엔드포인트 404 → 프론트가 모달리티 아이콘 폴백.
 
-의존(cv2·PIL)은 **함수 내부 지연 import**(모듈 순수성 — 미사용 환경 import 부담 0). **의료(PHI) 배제는
-엔드포인트 게이트**(``resolve_download_target`` registered·비의료)가 담당하므로 여기선 modality 만 본다.
+의존(cv2·PIL)은 **함수 내부 지연 import**(모듈 순수성 — 미사용 환경 import 부담 0). 노출 게이트는
+**엔드포인트**(``resolve_download_target`` registered)가 담당(도메인 제외 없음·2026-07-23)하므로 여기선 modality 만 본다.
 디스크 캐시(``cached_thumbnail``)로 크기별 generate-once 하고 브라우저 ``Cache-Control`` 로 완화한다.
 """
 from __future__ import annotations
