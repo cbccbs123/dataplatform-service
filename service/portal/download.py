@@ -1,14 +1,12 @@
-"""포탈 다운로드 지원 — 단일 자산·관계 묶음(spec 010 D-4/D-5).
+"""다운로드 지원 — 단일 자산 원본과 관계 묶음(zip).
 
-본 파일은 그룹별로 함수가 늘어난다:
-    - **G2**: ``parse_range_header`` — HTTP Range 헤더 파싱(**완전 순수**, DB·IO 0).
-    - **G3**: ``resolve_download_target``(단일 다운로드 타깃 해소·노출 게이트) ·
-      ``collect_bundle_assets``(관계 ego-network 묶음 수집·결정적 정렬) ·
-      ``build_bundle_zip``(원본 → zip, 누락은 manifest 로 고지하는 부분 zip).
+**흐름에서의 위치**: 라우트가 파일을 내려보내기 직전에 쓰는 조회·조립 계층이다. 구간 헤더
+파싱만 순수 함수이고, 나머지는 DB 를 읽어 대상과 경로를 확정한다. **쓰기는 없다**(헌법 6조).
 
-읽기 전용
-    asset/graph 조회만(쓰기·스키마 변경 0, 헌법 6조). 관계는 ``graph_query`` seam 경유.
-    결정성(헌법 3조): 묶음 정렬 tiebreak(seed→confidence→asset_id) + zip 엔트리 순서·타임스탬프 고정.
+**결과가 매번 같아야 한다**(헌법 3조) — 묶음 순서도 zip 엔트리 순서·타임스탬프도 고정한다.
+같은 요청이 다른 바이트를 내면 비교도 캐시도 무의미해진다.
+
+관계는 반드시 그래프 읽기 통로를 거친다 — 직접 쿼리하면 대칭 엣지의 절반을 놓친다.
 """
 
 from __future__ import annotations
@@ -26,7 +24,7 @@ from psycopg.rows import dict_row
 
 # 묶음 이웃은 반드시 graph_query seam 경유(대칭 엣지 양방향·status 필터). 직접 graph_edge 쿼리 금지.
 from src.config.filename_util import (
-    display_file_name,  # 표시/다운로드 파일명 asset_id 프리픽스 제거(065 T605)
+    display_file_name,  # 내려받을 때 보일 파일명 — 저장 시 붙은 id 접두를 떼어 준다
 )
 from src.relations.graph_query import fetch_active_relations_for_asset
 
@@ -34,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 _BYTES_PREFIX = "bytes="
 
-# 다운로드 노출 게이트(상세와 동일): registered 만 노출. 그 외/없음은 API 가 404. 도메인 제외 없음(2026-07-23).
+# 노출 기준은 상세 조회와 같다 — 등록 완료 자산만. 그 외는 404(없는 것과 같게 다룬다).
 _DOWNLOAD_TARGET_SQL = """
 SELECT asset_id, fs_path, fs_uri, file_size, modality, domain_label, status
 FROM asset
@@ -42,9 +40,9 @@ WHERE asset_id = %s
 LIMIT 1
 """
 
-# 묶음 이웃 경로 조회 (010 P1 · 042 FR-007).
+# 묶음에 담을 이웃들의 파일 경로 조회.
 # seed 는 ``resolve_download_target`` 로 registered 게이트됨 — 이웃만 SQL 로 재필터.
-# 비registered 이웃은 fs_path 없이 묶음에서 제외. 도메인 제외 없음(2026-07-23 전면 제거).
+# 아직 등록이 끝나지 않은 이웃은 묶음에서 빠진다(파일이 제자리에 없을 수 있다).
 _BUNDLE_PATHS_SQL = """
 SELECT asset_id, fs_path FROM asset
 WHERE asset_id = ANY(%s)
@@ -63,7 +61,18 @@ def parse_range_header(range_value: str | None, file_size: int) -> tuple[int, in
     헤더가 ``None`` 이면 ``None``(=전체 다운로드). 끝이 파일 크기 이상이면 ``file_size-1`` 로
     **클램프**한다(RFC 7233 §2.1 — 거부 아님; 일부 플레이어/다운로드 매니저가 stale 한 큰 end 를
     재요청해도 206 응답). 시작이 파일 크기 이상·역순·형식 오류·다중 범위는 ``ValueError`` 로
-    거부한다(API 가 416 매핑). (2026-06-08 코드리뷰: plan D-4 의 strict 거부를 RFC 클램프로 완화.)
+    거부한다(API 가 416 으로 응답). 범위가 파일 끝을 넘으면 **거부하지 않고 끝까지로 줄인다** —
+    표준이 그렇게 정하고 있고, 엄격히 거부하면 이어받기 클라이언트가 실패한다.
+
+    Args:
+        range_value: ``Range`` 헤더 값. ``None`` 이면 전체 다운로드라는 뜻이다.
+        file_size: 대상 파일 크기(클램프 기준).
+
+    Returns:
+        ``(start, end)`` — **둘 다 포함**하는 구간. 헤더가 없으면 ``None``.
+
+    Raises:
+        ValueError: 시작이 파일 크기 이상 · 역순 · 형식 오류 · 다중 범위. 호출부가 416 으로 바꾼다.
     """
     if range_value is None:
         return None
@@ -112,12 +121,12 @@ def parse_range_header(range_value: str | None, file_size: int) -> tuple[int, in
 def resolve_download_target(
     conn: Connection[Any], *, asset_id: str
 ) -> dict[str, Any] | None:
-    """``asset_id`` 의 단일 다운로드 타깃을 해소한다(노출 게이트 포함, plan D-4).
+    """``asset_id`` 의 단일 다운로드 타깃을 해소한다(노출 가능 여부까지 여기서 판단).
 
     Returns:
         registered 면 ``{"asset_id","fs_path","fs_uri","file_size","modality","file_name"}``
         (``file_name`` = ``fs_path`` basename). 행 없음/비registered → ``None`` (API 404).
-        (2026-07-23: 도메인 제외 전면 제거 — 의료 게이트 삭제.)
+
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(_DOWNLOAD_TARGET_SQL, (asset_id,))
@@ -142,7 +151,15 @@ def resolve_download_target(
 def _fetch_asset_paths(
     conn: Connection[Any], asset_ids: list[str]
 ) -> dict[str, Any]:
-    """주어진 asset_id 들의 ``fs_path`` 를 일괄 조회해 ``{asset_id: fs_path}`` 로 반환한다."""
+    """자산 id 들의 파일 경로를 **한 번에** 조회한다(자산마다 따로 묻지 않는다).
+
+    Args:
+        asset_ids: 조회할 자산 목록. 빈 목록이면 DB 를 건드리지 않는다.
+
+    Returns:
+        ``{asset_id: fs_path}``. **경로가 없는 자산은 빠진다** — 호출부가 그것으로 묶음에서
+        제외할지 판단한다.
+    """
     if not asset_ids:
         return {}
     with conn.cursor(row_factory=dict_row) as cur:
@@ -158,7 +175,7 @@ def collect_bundle_assets(
     max_neighbors: int = 50,
     min_confidence: float = 0.0,
 ) -> list[dict[str, Any]]:
-    """관계 ego-network(seed + 1-hop active 이웃) 묶음 자산을 수집한다(plan D-5).
+    """기준 자산과 **직접 연결된 이웃**을 묶음 대상으로 모은다.
 
     절차
         1. ``graph_query``(active, **양방향**)로 이웃을 받아 self-loop 제외·``min_confidence``
@@ -167,9 +184,16 @@ def collect_bundle_assets(
            초과 시 상위 N 으로 절단(허브 자산 메가블롭 방지, 절단 시 ``log`` 경고).
         3. seed 를 맨 앞에 두고 각 자산의 ``fs_path``/``file_name`` 을 채워 반환.
 
+    Args:
+        conn: 열려 있는 연결.
+        seed_asset_id: 기준 자산.
+        max_neighbors: 담을 이웃 수 상한. **연결이 아주 많은 자산 때문에 묶음이 통째로
+            거대해지는 것을 막는 안전장치** — 잘리면 경고를 남긴다.
+        min_confidence: 이 값 미만인 관계는 버린다. 기본값 0 은 전부 통과다.
+
     Returns:
-        ``[{"asset_id","fs_path","file_name"}, ...]`` — seed 먼저, 그다음 이웃(결정적 순서).
-        이웃 0이면 seed 단독 1건(US3 Acc 3). asset 행이 없어 경로를 모르는 항목은 제외.
+        ``[{"asset_id","fs_path","file_name"}, ...]`` — 기준 자산 먼저, 그다음 이웃(순서 고정).
+        이웃이 없으면 기준 자산 하나만 담는다. 경로를 모르는 항목은 뺀다.
     """
     seed_id = str(seed_asset_id)
     neighbors = fetch_active_relations_for_asset(conn, asset_id=seed_id)
@@ -212,7 +236,17 @@ def collect_bundle_assets(
 
 
 def _dedup_entry_name(name: str, used: set[str]) -> str:
-    """zip 엔트리명 충돌 시 ``root_1.ext`` 식 접미사로 유일화한다(결정적)."""
+    """zip 안에서 이름이 겹치면 번호를 붙여 유일하게 만든다.
+
+    같은 이름으로 두 번 넣으면 압축 해제 때 하나가 덮어써진다.
+
+    Args:
+        name: 넣으려는 이름.
+        used: **이미 쓴 이름 집합** — 이 함수가 여기에 결과를 추가한다(호출자와 공유하는 상태).
+
+    Returns:
+        충돌하지 않는 이름.
+    """
     if name not in used:
         used.add(name)
         return name
@@ -226,14 +260,14 @@ def _dedup_entry_name(name: str, used: set[str]) -> str:
         i += 1
 
 
-# 069 P1-2: 스트리밍 복사 청크(64KiB) — 원본을 통째로 메모리에 올리지 않는다.
+# 복사 조각 크기 — 원본을 통째로 메모리에 올리지 않기 위한 값.
 _BUNDLE_COPY_CHUNK = 64 * 1024
 # zip 결과가 이 크기를 넘으면 메모리 대신 디스크 임시파일로 굴린다(요청당 메모리 상한).
 _BUNDLE_SPOOL_MAX = 64 * 1024 * 1024
 
 
 def build_bundle_zip_stream(targets: list[dict[str, Any]]) -> tempfile.SpooledTemporaryFile:
-    """묶음 타깃들의 원본 파일을 zip **스트림(파일류)**로 만든다(069 P1-2 — OOM 차단 코어).
+    """묶음 대상들을 zip **스트림**으로 만든다 — 묶음이 커도 메모리 사용량이 일정하다.
 
     기존 ``build_bundle_zip``(bytes)이 파일마다 ``fh.read()`` 전체 적재 + 전체 zip 을 BytesIO 로
     들고 있어 대용량 묶음에서 OOM/DoS 소지가 있었다. 원본→zip 엔트리를 ``copyfileobj``(64KiB)로
@@ -241,8 +275,15 @@ def build_bundle_zip_stream(targets: list[dict[str, Any]]) -> tempfile.SpooledTe
     무관해진다. 반환 파일은 위치 0 으로 되감아 주며, 호출자가 소비 후 닫는다(StreamingResponse
     는 응답 종료 시 자동 close).
 
-    부분 zip 보장(Edge Case) · 결정성(헌법 3조)은 기존과 동일 — 누락은 skip+``_manifest.json``,
-    엔트리 순서=``targets`` 순서, 타임스탬프 1980-01-01 고정(동일 입력 2회 동일 바이트).
+    **파일이 없어도 실패하지 않는다** — 빠진 것은 건너뛰고 목록 파일에 적어 넣는다(하나 때문에
+    묶음 전체가 실패하면 안 되기 때문). 엔트리 순서와 타임스탬프를 고정해, 같은 입력이면
+    **바이트까지 같은 zip** 이 나온다.
+
+    Args:
+        targets: 담을 자산 목록(순서가 곧 zip 엔트리 순서).
+
+    Returns:
+        위치 0 으로 되감긴 임시 파일. 일정 크기를 넘으면 자동으로 디스크로 넘어간다.
     """
     spool = tempfile.SpooledTemporaryFile(max_size=_BUNDLE_SPOOL_MAX)
     missing: list[dict[str, Any]] = []
@@ -274,7 +315,7 @@ def build_bundle_zip_stream(targets: list[dict[str, Any]]) -> tempfile.SpooledTe
                 )
                 _write_zip_entry(zf, "_manifest.json", manifest.encode("utf-8"))
     except BaseException:
-        # 리뷰(069 🟡1): 중간 실패(디스크 오류 등) 시 spool 파일 핸들이 누수되지 않게 닫고 재전파
+        # 중간에 실패해도 임시 파일 핸들이 새지 않게 닫고 예외를 다시 올린다
         # (64MiB 초과분은 실제 디스크 임시파일이라 FD 누수 실해가 있다). 성공 경로만 열어서 반환.
         spool.close()
         raise
@@ -284,17 +325,31 @@ def build_bundle_zip_stream(targets: list[dict[str, Any]]) -> tempfile.SpooledTe
 
 
 def build_bundle_zip(targets: list[dict[str, Any]]) -> bytes:
-    """묶음 zip 을 bytes 로 돌려주는 하위호환 래퍼(plan D-5 — 코어는 ``build_bundle_zip_stream``).
+    """완성된 zip 을 통째로 메모리에 올려 돌려주는 래퍼.
 
-    069 P1-2 이후 라우트는 스트림 코어를 직접 쓰고, 이 래퍼는 zip **내용 검증용**(테스트·소규모)
-    으로 남는다. 파일별 전체 적재는 코어에서 이미 제거됐고, 여기서만 완성 zip 을 한 번에 읽는다.
+    ⚠️ **운영 경로에서는 쓰지 않는다** — 크기만큼 메모리를 먹는다. zip 내용을 직접 열어
+    확인해야 하는 테스트·소규모 호출용으로만 남겨 둔다. 실제 응답은 스트리밍 쪽을 쓴다.
+
+    Args:
+        targets: 담을 자산 목록(순서가 곧 zip 엔트리 순서).
+
+    Returns:
+        zip 전체 바이트.
     """
     with build_bundle_zip_stream(targets) as spool:
         return spool.read()
 
 
 def _write_zip_entry(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
-    """타임스탬프 고정 ZipInfo 로 엔트리를 쓴다(결정적 바이트, 헌법 3조)."""
+    """zip 엔트리 하나를 쓴다 — **타임스탬프를 고정**해 같은 입력이면 같은 바이트가 나오게.
+
+    현재 시각을 넣으면 내용이 같아도 파일이 매번 달라져 비교·캐시가 안 된다.
+
+    Args:
+        zf: 대상 zip.
+        arcname: zip 안에서의 경로.
+        data: 넣을 바이트.
+    """
     info = zipfile.ZipInfo(filename=arcname, date_time=(1980, 1, 1, 0, 0, 0))
     info.compress_type = zipfile.ZIP_DEFLATED
     zf.writestr(info, data)

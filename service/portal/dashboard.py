@@ -1,19 +1,13 @@
-"""운영 대시보드 집계 — access·lineage·asset 3도메인을 한 트랜잭션에서 조합(013 운영 후속·052 번들).
+"""운영 대시보드 집계 — 접근·계보·자산 세 영역을 한 트랜잭션에서 조합한다.
 
-배경(부하)
-    관리자 대시보드(DataFlatformWeb)는 상세 화면 로더를 그대로 조합해 한 번 열 때 9~11회의
-    ``/admin/*`` 호출을 낸다(도메인 3 × 전체/오늘/월별/시간별). Promise.all 병렬이라 체감은
-    낫지만 HTTP 왕복·커넥션 풀 churn·모달리티 월별의 ``/assets`` 전수 스캔(N+1)이 그대로 누적된다.
-    이 모듈은 검증된 순수 조회 함수 6종(``*_stats``/``*_timeline``)을 **한 커넥션·한 트랜잭션**에서
-    조합해 단일 응답으로 내려, 왕복·풀 churn 을 없애고 프론트의 자산 전수 스캔을 제거한다.
+**흐름에서의 위치**: 대시보드 화면 하나가 필요한 것을 한 번에 만들어 준다. 화면이 영역·기간별로
+따로 부르면 왕복이 쌓이고, 조각마다 다른 순간을 보게 돼 수치가 서로 어긋난다.
 
-설계
-    - **재구현 0**: 기존 ``access_log``/``lineage_query``/``asset_stats`` 함수를 그대로 호출한다.
-      결정적 정렬·LLM 0 은 각 함수가 이미 보장하므로 조합 계층은 별도 정책이 없다(도메인 제외 없음·2026-07-23).
-    - **윈도우는 호출자가 준 ``now`` 로 계산**(핸들러가 ``datetime.now(UTC)`` 주입) — 대시보드의
-      "오늘"·"최근 N개월"은 벽시계 상대라 결정성(헌법 3조)의 대상이 아니다(관계·검색 결정과 무관).
-      now 를 인자로 받아 단위 테스트에서 고정 시각 주입이 가능하다(창 계산 결정적 검증).
-    - group_by: access=action · lineage=activity · asset=modality (각 timeline 화이트리스트 내).
+설계 판단
+    - **새로 계산하지 않는다** — 이미 검증된 조회 함수들을 그대로 부르고 묶기만 한다. 정렬·
+      결정성은 그 함수들이 보장하므로 여기서 규칙을 또 두지 않는다.
+    - **기준 시각은 호출자가 준다**. "오늘"·"최근 N개월"은 벽시계에 매인 값이라, 안에서
+      현재 시각을 읽으면 테스트가 시각에 따라 흔들린다.
 """
 from __future__ import annotations
 
@@ -32,8 +26,15 @@ _DEFAULT_MONTHS = 6
 def _month_floor_back(day_start: datetime, months: int) -> datetime:
     """``day_start``(자정) 기준 (months-1)개월 전 '그 달 1일'을 반환(월 경계 정렬 N개월 창).
 
-    예) day_start=2026-07-01, months=6 → 2026-02-01(2·3·4·5·6·7월 = 6개월). dateutil 없이
-    월 경계로 정렬해 프론트의 월 롤업(일별 버킷→월 라벨)과 어긋나지 않게 한다.
+    예) 7월 1일에서 6개월을 되짚으면 2월 1일(2~7월 = 6개월). 월 경계에 맞춰야 화면의
+    월 단위 묶음과 어긋나지 않는다.
+
+    Args:
+        day_start: 기준 날짜(자정).
+        months: 거슬러 올라갈 개월 수. **기준 달을 포함해서 센다**(6이면 5개월 전 1일).
+
+    Returns:
+        그 달 1일 자정.
     """
     first = day_start.replace(day=1)
     year, month = first.year, first.month - (months - 1)
@@ -58,16 +59,35 @@ def build_dashboard_summary(
     조회 전용·도메인 제외 없음(각 함수)·LLM 0·마이그레이션 0. 윈도우는 ``now`` 로 계산(주입·결정적 테스트).
     반환 ``{access:{...}, lineage:{...}, asset:{...}, meta:{...}}``.
 
-    ``monthly_interval``(057 FR-303) — 월별 슬라이스 버킷 단위. 기본 ``"day"``(일별·하위호환·기존
+    ``monthly_interval`` — 월별 슬라이스의 버킷 단위. 기본은 일별이며(기존
     동작 완전 불변). ``"month"`` 면 월 버킷으로 내려 프론트의 일→월 롤업(``rollupTimelineSeriesToMonth``)을
     제거한다(각 timeline 함수의 TIMELINE_INTERVALS 화이트리스트·API 계층이 day|month 로 선검증). 시간별
-    슬라이스(hourly_timeline)는 항상 hour 로 불변.
+    슬라이스는 항상 시간 단위다.
+
+    Args:
+        now: 기준 시각. **인자로 받는 이유는 테스트가 시각을 고정할 수 있어야** 하기 때문이다
+            (내부에서 현재 시각을 읽으면 같은 입력이 매번 다른 결과를 낸다).
+        months: 월별 슬라이스가 거슬러 올라갈 개월 수.
+        monthly_interval: 월별 슬라이스의 버킷 단위(일별·월별). 시간별 슬라이스와는 무관하다.
+
+    Returns:
+        ``{access, lineage, asset, meta}`` — 세 영역 집계와 계산에 쓴 기준값.
     """
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     month_start = _month_floor_back(today_start, months)
 
     def _domain_slice(stats_fn: Any, timeline_fn: Any, group_by: str) -> dict[str, Any]:
+        """한 영역의 지표 묶음을 만든다 — 조회 함수만 갈아끼워 세 영역에 재사용한다.
+
+        Args:
+            stats_fn: 그 영역의 집계 함수.
+            timeline_fn: 그 영역의 추이 함수.
+            group_by: 추이를 가를 기준.
+
+        Returns:
+            전체 지표·오늘 지표·월별 추이를 담은 dict.
+        """
         return {
             "kpi_alltime": stats_fn(conn),
             "kpi_today": stats_fn(conn, since=today_start, until=today_end),
@@ -87,7 +107,7 @@ def build_dashboard_summary(
     }
     summary["meta"] = {
         "months": months,
-        "monthly_interval": monthly_interval,  # 057 FR-303: 월별 슬라이스 버킷 단위(프론트 롤업 여부 판단)
+        "monthly_interval": monthly_interval,  # 월별 슬라이스 버킷 단위 — 화면이 다시 묶을지 판단하는 근거
         "today_from": today_start.isoformat(),
         "today_to": today_end.isoformat(),
         "monthly_from": month_start.isoformat(),

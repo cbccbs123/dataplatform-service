@@ -1,4 +1,4 @@
-"""포탈 인증 공개 API (spec 042 · 010 US4).
+"""포탈 인증 공개 API.
 
     ``config`` / ``verifier`` / ``principal`` / ``dev_issuer`` / ``deps`` / ``schemas``
 """

@@ -7,7 +7,7 @@
     .env 를 로드하는 전용 부트스트랩을 둔다. 로드 후엔 **코어의** ``init_settings`` 로 필수 env 검증 +
     frozen 설정 생성(이후 ``get_current_settings`` 활성) — 설정 스키마·검증 로직은 코어 단일 출처를 재사용한다.
 
-    (레포 분리 077 Phase 1: 코어는 ``src.*`` 로 설치/참조, 백엔드 코드는 ``service.*``.)
+    (코어는 ``src.*`` 로 설치해 참조하고, 백엔드 코드는 ``service.*`` 다.)
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""요청 주체(Principal) — 검증기와 분리된 애플리케이션 계약 (spec 042).
+"""요청 주체 — 토큰 검증기와 분리된 애플리케이션 쪽 계약.
 
 포탈·``project_ext_meta`` 는 JWT 세부가 아니라 ``Principal``(user_id·clearance) 만 본다.
 """
@@ -26,10 +26,19 @@ ANONYMOUS = Principal(
 
 
 def claims_to_principal(claims: dict[str, Any]) -> Principal:
-    """검증된 JWT claims → ``Principal``.
+    """검증된 클레임을 요청 주체로 바꾼다.
 
-    MVP: ``sub`` → user_id, 유효 토큰이면 clearance ``authorized`` (2-tier MVP).
-    clearance 는 JWT payload 에 넣지 않음 — 검증 후 코드에서 부여.
+    권한 등급은 **토큰에 담지 않고 코드가 부여한다** — 토큰에 넣으면 발급처가 등급까지 정하게 되고,
+    등급 정책을 바꿀 때 이미 발급된 토큰들이 남아 버린다.
+
+    Args:
+        claims: 검증을 통과한 클레임 dict.
+
+    Returns:
+        요청 주체.
+
+    Raises:
+        ValueError: 주체(``sub``)가 없을 때 — 누구의 요청인지 모르면 감사 기록을 남길 수 없다.
     """
     user_id = claims.get("sub")
     if not user_id or not isinstance(user_id, str):

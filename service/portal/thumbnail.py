@@ -1,4 +1,4 @@
-"""자산 썸네일 생성 (057-후속) — 이미지·영상 시각 미리보기.
+"""자산 썸네일 생성 — 이미지·영상의 시각 미리보기.
 
 원본(``fs_path``)에서 축소 썸네일 JPEG 바이트를 만든다. **읽기 전용**(원본·DB 무수정, 헌법 6조)·
 **결정적**(같은 파일 → 같은 바이트, 헌법 3조)·**학습/LLM 0**(단순 이미지 리사이즈·프레임 추출·헌법 1·2조).
@@ -8,7 +8,7 @@
 - **오디오/텍스트/unknown**: 시각 표현이 없어 ``None`` → 엔드포인트 404 → 프론트가 모달리티 아이콘 폴백.
 
 의존(cv2·PIL)은 **함수 내부 지연 import**(모듈 순수성 — 미사용 환경 import 부담 0). 노출 게이트는
-**엔드포인트**(``resolve_download_target`` registered)가 담당(도메인 제외 없음·2026-07-23)하므로 여기선 modality 만 본다.
+**엔드포인트**가 담당하므로(노출 대상인지 먼저 확인한다) 여기서는 모달리티만 본다.
 디스크 캐시(``cached_thumbnail``)로 크기별 generate-once 하고 브라우저 ``Cache-Control`` 로 완화한다.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from typing import Any
 
 _LOG = logging.getLogger("meta_extract.thumbnail")
 
-# 057-후속: 용도별 크기 프리셋 — card(목록·hover)·detail(상세 히어로). _MAX_DIM 캡으로 남용 방지.
+# 용도별 크기 — 목록용(card)과 상세용(detail). 상한을 둬 과도한 크기 요청을 막는다.
 _SIZE_PRESETS = {"card": 320, "detail": 640}
 _MAX_DIM = 1024
 THUMB_MAX_DIM = _SIZE_PRESETS["card"]  # 기본(card) 최대 변(px) — 프리셋 단일 출처(중복 리터럴 드리프트 방지)
@@ -33,12 +33,30 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")  # 캐시 파일명 안전 id(경�
 
 
 def _resolve_dim(size: str | None) -> int:
-    """크기 프리셋 → 최대 변(px). 미지정/미지원은 card(기본)·최대 ``_MAX_DIM`` 캡(남용 방지)."""
+    """크기 이름을 실제 픽셀 값으로 바꾼다.
+
+    Args:
+        size: 크기 이름. **모르는 값이면 기본 크기로 접는다** — 오타로 썸네일이 안 나오는 것보다
+            작게라도 나오는 편이 낫다. 상한을 둬 과도한 크기 요청을 막는다.
+
+    Returns:
+        최대 변 픽셀 수.
+    """
     return min(_SIZE_PRESETS.get(size or "card", THUMB_MAX_DIM), _MAX_DIM)
 
 
 def _encode_thumb(pil_img: Any, max_dim: int = THUMB_MAX_DIM) -> bytes:
-    """PIL 이미지 → 축소 JPEG 바이트(순수·결정적). EXIF 회전 반영·RGB·LANCZOS 리샘플."""
+    """이미지를 축소해 JPEG 바이트로 만든다(순수·결정적).
+
+    촬영 방향 정보를 반영해 회전시킨다 — 안 하면 세로 사진이 눕는다.
+
+    Args:
+        pil_img: 원본 이미지.
+        max_dim: 긴 변의 최대 픽셀.
+
+    Returns:
+        JPEG 바이트.
+    """
     from io import BytesIO
 
     from PIL import Image, ImageOps
@@ -56,8 +74,16 @@ def generate_thumbnail(
 ) -> bytes | None:
     """원본 ``fs_path`` → 최대 변 ``max_dim`` 축소 JPEG 바이트(결정적). 비대상/실패/손상 → ``None``.
 
-    어떤 예외도 전파하지 않는다(손상 파일·미지원 코덱 등은 썸네일 없음=404 로 격리). 결정성:
-    이미지 리사이즈·영상 고정 위치 프레임·고정 JPEG 파라미터라 동일 입력 → 동일 출력.
+    **어떤 예외도 올리지 않는다** — 손상 파일이나 지원하지 않는 코덱 때문에 화면 전체가
+    깨지면 안 되므로, 실패는 '썸네일 없음'으로 격리한다.
+
+    Args:
+        fs_path: 원본 경로. ``None`` 이면 만들지 않는다.
+        modality: 이미지·영상만 대상이다. 그 밖이면 ``None`` 을 돌려준다.
+        max_dim: 긴 변의 최대 픽셀.
+
+    Returns:
+        JPEG 바이트, 또는 대상이 아니거나 실패하면 ``None``(호출부가 404 로 바꾼다).
     """
     if modality not in THUMBNAILABLE_MODALITIES or not fs_path:
         return None
@@ -111,8 +137,16 @@ def cached_thumbnail(
     modality/생성 실패는 ``None``(캐시하지 않음). ``asset_id`` 가 안전 패턴이 아니면 경로 조작 방지로
     캐시를 건너뛰고 직접 생성.
 
-    ⚠️ 캐시 기능은 자체 완결적이다 — 스키마/파이프라인 변경 0. 제거 시 이 함수·엔드포인트·캐시 디렉터리만
-    치우면 되고(마이그레이션·데이터 모델 없음), ``generate_thumbnail`` 로 즉시 되돌아간다.
+    Args:
+        asset_id: 캐시 파일명이 되는 값. **안전한 글자만 허용**하고, 아니면 캐시를 건너뛰고
+            바로 생성한다 — 그대로 경로에 붙이면 엉뚱한 위치에 쓸 수 있다.
+        fs_path: 원본 경로. 없으면 ``None`` 을 돌려준다.
+        modality: 이미지·영상만 대상이다.
+        size: 크기 이름. **크기마다 캐시 파일이 따로** 생긴다.
+        cache_dir: 캐시 위치. ``None`` 이면 환경 설정을 따른다(테스트가 격리할 때 준다).
+
+    Returns:
+        JPEG 바이트, 또는 대상이 아니거나 생성 실패면 ``None``(실패는 캐시하지 않는다).
     """
     if modality not in THUMBNAILABLE_MODALITIES or not fs_path:
         return None

@@ -1,11 +1,14 @@
-"""관리자 조회 라우트 (069 US-E FR-E6·A) — 계보·접근이력·자산집계·대시보드·관계 목록(GET).
+"""운영자용 **조회 전용** 라우트 — 계보·접근이력·자산 집계·대시보드·관계 목록.
 
-종전 ``portal_api.py`` 의 ``/admin/*`` GET 핸들러를 그대로 이관한다(동작 불변). 서비스 함수는 각 홈에서
-직접 import 하고, 인프라(``_run_in_db``·``_parse_dt``·``_validated_interval``)는 ``_infra`` 모듈참조로
-쓴다 — 그래야 단위 테스트가 ``patch("service.api.routes_admin.<name>")`` 로 쓰는 곳에서 대체할 수 있다.
+**흐름에서의 위치**: HTTP 요청을 받아 포탈 조회 함수에 넘기고 응답 모양만 맞춘다. 집계도
+필터링도 여기서 하지 않는다 — 전부 ``service/portal`` 몫이다. 쓰기는 없다.
 
-⚠️ 라우트 등록 순서(catch-all): ``/admin/assets/modality/{modality}`` 계열·``/admin/assets/{asset_id}/lineage``
-를 먼저 선언하고 catch-all 1세그 ``/admin/assets/{asset_id}`` 를 **뒤**에 둔다(구체 경로 우선 매칭 — C8).
+인프라 함수(트랜잭션 실행·날짜 파싱 등)는 ``from ... import`` 가 아니라 **모듈 경유**로 쓴다
+— 그래야 테스트가 이 모듈의 이름을 갈아끼워 DB 없이 검증할 수 있다.
+
+⚠️ **라우트 선언 순서가 동작을 가른다.** 한 세그먼트를 통째로 받는 ``/admin/assets/{asset_id}``
+를 먼저 선언하면 뒤따르는 구체 경로(``/admin/assets/modality/...``)가 영영 매칭되지 않는다 —
+구체적인 것을 **위에** 둔다.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ from src.relations.review import _REVIEW_STATUSES, list_edges_for_review, list_r
 
 router = APIRouter()
 
-# relation_kind status 화이트리스트(필터 드롭다운 GET·FR-801). 관계 어휘 두 상태만 노출한다.
+# 필터 드롭다운에 노출할 관계 종류 상태. 검토 대기·활성 둘만 보여 준다.
 _RELATION_KIND_STATUSES = ("active", "inactive")
 
 
@@ -53,10 +56,10 @@ def asset_lineage(
     asset_id: str,
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """자산 처리 이력(계보)을 발생 시각순으로 반환한다(013 US2·FR-004).
+    """자산 하나의 처리 이력(계보)을 발생 시각순으로 돌려준다.
 
     조회 전용(``_run_in_db`` idempotent) — ``query_asset_lineage`` 가 ``asset_lineage`` 를
-    시간순으로 끌어온다. 자산 데이터·스키마 쓰기 0·신규 LLM 0. 도메인 제외 없음(2026-07-23·FR-014 폐지).
+    조회 전용이며 도메인에 따른 제외는 없다(모든 도메인을 균일하게 노출).
     미존재/이력 없음은 빈 ``activities`` 로 200 반환(의도·도메인 제외 없음).
     """
     activities = _infra._run_in_db(lambda conn: query_asset_lineage(conn, asset_id))
@@ -73,9 +76,9 @@ def access_logs(
     offset: int = Query(0, ge=0),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """API 접근 이력 조회(필터·페이징·013 US3·FR-009). 조회 전용·결정적·LLM 0.
+    """API 접근 이력을 필터·페이징해 조회한다(조회 전용).
 
-    접근 정책(013 D4): **인증된 사용자 누구나**(``require_principal``·현 2-tier MVP). 감사 데이터는
+    접근 정책: **인증된 사용자 누구나** 볼 수 있다(``require_principal``). 감사 데이터는
     clearance 별 마스킹 없이 전사 노출 — admin/operator 한정은 RBAC 도입 시(향후 포탈) 조인다(의도적 개방).
     """
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
@@ -93,7 +96,7 @@ def access_logs_stats(
     to: str | None = Query(None, alias="to"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """접근 이력 기본 집계(총계·action별·user별·013 FR-009a). 조회 전용·결정적·LLM 0."""
+    """접근 이력 집계 — 총계와 동작별·사용자별 건수(조회 전용)."""
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
     return _infra._run_in_db(lambda conn: access_log_stats(conn, since=since, until=until))
 
@@ -107,10 +110,10 @@ def access_logs_timeline(
     group_by: str | None = Query(None, description="멀티시리즈 분할: action | user_id(미지정=단일)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """접근 이력 시계열(버킷별 호출 수·그래프용·013 FR-009c). 조회 전용·결정적·LLM 0.
+    """접근 이력을 시간 버킷으로 묶어 호출 수를 낸다(그래프용·조회 전용).
 
     ``group_by=action``(또는 user_id)이면 멀티시리즈 1회 응답(시리즈별 막대). 미지정이면 단일 시리즈.
-    interval 화이트리스트 검증은 ``_validated_interval`` Depends(422·FR-E6 통합).
+    버킷 단위 값은 ``_validated_interval`` 이 검증한다(허용 목록 밖이면 422).
     """
     if group_by is not None and group_by not in ("action", "user_id"):
         raise HTTPException(status_code=422, detail=f"group_by 는 action|user_id 만 허용: {group_by!r}")
@@ -128,7 +131,9 @@ def access_logs_overview_endpoint(
     interval: Annotated[str, Depends(_infra._validated_interval)] = "day",
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """접근 이력 overview 1회 응답(057 FR-301) — ``{total, by_action, timeline}``. 조회 전용·결정적·LLM 0.
+    """접근 이력 화면이 필요한 것을 **한 번에** 돌려준다 — ``{total, by_action, timeline}``.
+
+    화면이 세 번 부르지 않도록 묶은 응답이다(조회 전용).
 
     프론트가 stats+list+timeline 3회 순차 호출하던 것을 stats+timeline **1회**로 묶는다(``access_log_overview``·
     list 는 별도 페이징 유지). interval 화이트리스트 위반은 422(``_validated_interval``).
@@ -151,7 +156,7 @@ def lineage_feed(
     offset: int = Query(0, ge=0),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """기간 내 전 자산 계보 피드(시간역순·페이징·013 FR-009b). 조회 전용·결정적·LLM 0·도메인 제외 없음."""
+    """기간 내 모든 자산의 계보를 최신순으로 페이징해 돌려준다(조회 전용)."""
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
     return _infra._run_in_db(
         lambda conn: query_lineage_feed(
@@ -189,10 +194,10 @@ def asset_stats_endpoint(
         False, description="운영 5버킷 집계(by_snapshot_bucket) 동반(계보 현황 화면·054·FR-201/202)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """전체 자산 집계(FSM status·modality·domain·file_ext·date별·총계·013 FR-009e). 결정적·LLM 0·도메인 제외 없음.
+    """전체 자산을 여러 기준으로 집계한다 — 상태·모달리티·도메인·확장자·날짜별과 총계.
 
-    ``snapshot_buckets=true``(054·계보 현황) 지정 시 응답에 ``by_snapshot_bucket``(운영 5버킷
-    count·``sum==total``·FR-201/202)이 추가된다. 미지정(기본 False)이면 기존 응답이 완전히 불변이다.
+    ``snapshot_buckets=true`` 를 주면 응답에 ``by_snapshot_bucket``(운영 5버킷
+    count·합계가 total 과 일치)이 추가된다. 주지 않으면 응답 모양이 그대로다.
     """
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
     return _infra._run_in_db(
@@ -219,10 +224,10 @@ def assets_list(
     offset: int = Query(0, ge=0),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """자산 목록(FSM·modality·domain·file_ext·날짜 필터·페이징·013 FR-009f). 도메인 제외 없음·created_at 역순·LLM 0.
+    """자산 목록을 필터·페이징해 돌려준다(최신순·조회 전용).
 
-    ``with_content=true`` 면 행마다 요약(summary)·키워드(keywords) 동반. ``snapshot_bucket``(054·FR-103)
-    지정 시 FSM status 를 운영 5버킷으로 롤업해 필터(``status`` 무시·C3). 화이트리스트 검증(400)은 이
+    ``with_content=true`` 면 행마다 요약·키워드가 함께 온다. ``snapshot_bucket``
+    지정 시 상태를 5버킷으로 묶어 필터한다(이때 ``status`` 는 무시). 값 검증(400)은 이
     API 계층 책임(f-string 인젝션 방지). 둘 다 미지정 시 기존 동작 불변(하위호환).
     """
     if snapshot_bucket is not None and snapshot_bucket not in _SNAPSHOT_BUCKETS:
@@ -249,7 +254,10 @@ def modality_detail_endpoint(
     to: str | None = Query(None, alias="to", description="생성일 상한(exclusive)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """모달리티 드릴다운 집계(보완 v6) — 해당 모달리티의 확장자·상태·일자별 분포 + 총계. 결정적·LLM 0·도메인 제외 없음."""
+    """한 모달리티만 파고든 집계 — 확장자·상태·일자별 분포와 총계(조회 전용).
+
+    도메인에 따른 제외는 없다(모든 도메인을 균일하게 노출).
+    """
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
     return _infra._run_in_db(lambda conn: modality_detail(conn, modality, since=since, until=until))
 
@@ -263,9 +271,9 @@ def modality_overview_endpoint(
     limit: int = Query(50, ge=1, le=200),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """모달리티 현황 BFF 1회 응답(057 FR-302) — ``{detail, timeline, first_page}``. 조회 전용·도메인 제외 없음·LLM 0.
+    """모달리티 현황 화면이 필요한 것을 **한 번에** 돌려준다 — ``{detail, timeline, first_page}``..
 
-    interval 화이트리스트 위반은 422(``_validated_interval``). **라우트 순서(C8)**: 리터럴 3세그 경로라
+    버킷 단위 값이 허용 목록 밖이면 422. **라우트 순서**: 고정 3세그먼트 경로라
     catch-all 1세그 ``/admin/assets/{asset_id}`` 보다 위(구체 경로)에 둔다.
     """
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
@@ -283,10 +291,10 @@ def asset_timeline_endpoint(
         None, description="멀티시리즈 분할: modality | status | domain | file_ext(미지정=단일)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """자산 생성 일자 추이(보완 v6·계보 timeline 과 대칭). 결정적·LLM 0·도메인 제외 없음.
+    """자산 생성 추이를 돌려준다(계보 추이와 응답 모양이 같다·조회 전용).
 
-    ``group_by``(modality/status/domain/file_ext) 주면 멀티시리즈, 미지정이면 단일. interval 검증은
-    ``_validated_interval`` Depends(422).
+    ``group_by`` 를 주면 그 기준으로 시리즈가 갈리고, 안 주면 하나로 합친 추이가 나온다.
+    끊는 단위 검증은 의존성이 먼저 처리한다(허용 밖이면 422).
     """
     if group_by is not None and group_by not in ("modality", "status", "domain", "file_ext"):
         raise HTTPException(status_code=422,
@@ -297,17 +305,17 @@ def asset_timeline_endpoint(
             conn, since=since, until=until, interval=interval, group_by=group_by))
 
 
-# 054·FR-301: 계보 현황 목록에서 자산 1건으로 드릴다운(관리자 관점). 사용자용 루트 ``GET /assets/{id}`` 와
-# 동일한 ``fetch_asset_detail`` 노출 게이트(없음/비registered → 404)를 재사용한다(도메인 제외 없음·자산 데이터 노출 0).
-# **라우트 순서(C8)**: 위 modality/{modality}·{asset_id}/lineage 를 먼저 선언해 이 catch-all 1세그가
-# 그것들을 가리지 않게 — 그래서 이 라우트를 뒤에 둔다.
+# 관리자 화면에서 자산 1건으로 파고드는 경로. 노출 판단은 사용자용 상세와 같은 함수를 쓴다
+# — 두 곳이 각자 판단하면 한쪽만 뚫린다.
+# ⚠️ **선언 순서에 의존한다**: 한 세그먼트짜리 경로라, 위의 구체적인 경로들보다 먼저 선언하면
+# 그것들을 전부 삼킨다. 그래서 반드시 뒤에 둔다.
 @router.get("/admin/assets/{asset_id}")
 def admin_asset_detail(
     asset_id: str,
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """관리자 자산 1건 상세(계보 현황 드릴다운·FR-301). 노출 게이트는 ``fetch_asset_detail``
-    책임(없음/비registered → None → 404·도메인 제외 없음). 조회 전용·LLM 0. clearance 로 ext_meta tier omit(042)."""
+    """관리자용 자산 1건 상세. 노출 여부 판정은 ``fetch_asset_detail``
+    이 맡는다(없거나 등록 완료가 아니면 404). 권한에 따라 일부 메타 항목은 가려진다."""
     detail = _infra._run_in_db(
         lambda conn: fetch_asset_detail(
             conn, asset_id=asset_id, clearance=principal.clearance))
@@ -323,10 +331,10 @@ def dashboard_summary_endpoint(
         "day", description="월별 슬라이스 버킷 단위: day(기본·하위호환) | month(057 FR-303·프론트 롤업 제거)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """운영 대시보드 집계 1회 응답(013 운영 후속·052 번들) — access·lineage·asset 3도메인 ×
+    """운영 대시보드가 필요한 것을 **한 번에** 돌려준다 — 접근·계보·자산 세 영역 ×
     전체/오늘/월별/시간별. 조회 전용·결정적·LLM 0·마이그레이션 0·도메인 제외 없음.
 
-    ``monthly_interval``(057 FR-303) — 월 범위엔 day|month 만 유효(hour 부적합) → 그 외 422.
+    ``monthly_interval`` — 월 범위에는 day·month 만 유효하다(hour 는 버킷이 너무 잘아 422).
     (TIMELINE 화이트리스트와 다른 별도 검증이라 ``_validated_interval`` 미적용.)
     """
     if monthly_interval not in ("day", "month"):
@@ -345,7 +353,7 @@ def relations_proposed_summary_endpoint(
     interval: Annotated[str, Depends(_infra._validated_interval)] = "day",
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """관계 제안(relations.proposed) distinct 자산 수 + 발생 추이 1회 응답(057 FR-204). 조회 전용·도메인 제외 없음·LLM 0.
+    """관계가 제안된 자산 수와 그 추이를 한 번에 돌려준다(조회 전용).
 
     ``COUNT(DISTINCT)`` 전기간 집계(``relation_proposed_summary``·lineage occurred_at). interval 검증은
     ``_validated_interval`` Depends(422).
@@ -374,11 +382,11 @@ def relations_list(
     date_on: str | None = Query(None, description="기간 대상 컬럼: created | reviewed"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """관계 검토 큐/내역을 status별 페이징 조회한다(FR-101/102/103 + G7 검색·필터·기간). 조회 전용·LLM 0.
+    """관계 검토 큐·내역을 상태별로 페이징 조회한다(검색·필터·기간 지원·조회 전용).
 
-    ``status`` 화이트리스트(``_REVIEW_STATUSES``) 위반은 400. (도메인 제외 없음·2026-07-23 — 의료 엣지 포함·복귀 시 재도입.)
-    G7 선택 필터: min>max·conf∉[0,1]·date_on∉{created,reviewed}·from>to → 400, 형식오류 → 422(_parse_dt).
-    date_col 결정: date_on 명시 시 매핑, 생략 시 status별 자동(proposed→created_at·그외→reviewed_at).
+    **모순된 필터는 조용히 흘리지 않고 400 으로 거부한다**(하한>상한 · 신뢰도가 0~1 밖 ·
+    시작>끝). 조건이 서로 어긋나면 결과가 0건으로 나올 텐데, 그것이 '진짜 없음'인지
+    '조건 실수'인지 화면에서 구분할 방법이 없기 때문이다. 도메인에 따른 제외는 없다.
     """
     if status not in _REVIEW_STATUSES:
         raise HTTPException(
@@ -402,12 +410,15 @@ def relations_list(
                 detail=f"알 수 없는 date_on: {date_on!r} (허용: {list(_DATE_ON_MAP)})")
         date_col = _DATE_ON_MAP[date_on]
     else:
+        # 기준 컬럼을 안 주면 상태에 맞춰 고른다 — 아직 검토 안 한 큐는 reviewed_at 이
+        # 비어 있어, 그것으로 기간을 걸면 전부 빠진다.
         date_col = "created_at" if status == "proposed" else "reviewed_at"
 
     since, until = _infra._parse_dt(from_), _infra._parse_dt(to)
     if since is not None and until is not None and since > until:
         raise HTTPException(status_code=400, detail=f"from({from_}) > to({to})")
 
+    # 공백만 넣은 검색어는 '검색 안 함'으로 접는다 — 그대로 넘기면 모든 행에 걸린다.
     q_clean = q.strip() if q else None
     q_clean = q_clean or None
 
@@ -425,7 +436,7 @@ def relation_kinds_list(
     status: str | None = Query(None, description="관계종류 상태: active | inactive(생략=전체)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
-    """관계종류 목록을 조회한다(FR-801·필터 드롭다운용·조회 전용·LLM 0).
+    """관계 종류 목록을 조회한다(필터 드롭다운용·조회 전용).
 
     ``{rows:[{kind_code, kind_name_ko, status}], total}`` 를 kind_code 오름차순(결정적)으로 반환한다.
     ``status`` 화이트리스트(``_RELATION_KIND_STATUSES``) 위반은 400. RBAC = ``require_principal``.

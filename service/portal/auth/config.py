@@ -1,4 +1,4 @@
-"""포탈 인증 설정 — env 단일 출처 (spec 042).
+"""포탈 인증 설정 — 환경변수 단일 출처.
 
 환경변수
     PORTAL_AUTH_DISABLED   — 1 이면 dev bypass(anonymous 허용)
@@ -29,6 +29,18 @@ class PortalAuthConfig:
 
 
 def _env_bool(name: str, default: str = "0") -> bool:
+    """환경변수를 불리언으로 읽는다.
+
+    참으로 보는 값은 ``1``·``true``·``yes``·``on`` 뿐이고, **나머지는 전부 거짓**이다 —
+    인증 관련 토글이라 애매한 값은 "끔" 쪽으로 접는 편이 안전하다.
+
+    Args:
+        name: 환경변수 이름.
+        default: 미설정일 때 쓸 문자열 값.
+
+    Returns:
+        불리언 값.
+    """
     raw = os.getenv(name, default).strip().lower()
     return raw in {"1", "true", "yes", "on"}
 

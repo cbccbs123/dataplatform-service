@@ -1,12 +1,11 @@
-"""포탈 앱 인프라 (069 US-E FR-E6·A) — DB 앱수명 풀·트랜잭션 seam·lifespan·접근이력 미들웨어.
+"""앱 공통 인프라 — DB 풀·트랜잭션 실행 통로·수명 주기·접근 기록 미들웨어.
 
-종전 ``portal_api.py`` 상단의 앱 인프라 코드를 **그대로 이관**한다(로직 불변). 별도 모듈로 두는 이유는
-**순환 import 회피**다 — 라우터(``routes_*``)가 ``_run_in_db``/``_validated_interval`` 을 쓰는데, 이를
-``__init__`` 에 두면 ``__init__``(라우터 include) ↔ 라우터가 서로를 import 하는 순환이 생긴다. ``_infra``
-는 아무 라우터도 import 하지 않으므로(routes→_infra, __init__→routes+_infra) 순환이 없다.
+**흐름에서의 위치**: 라우터들이 DB 를 쓰려면 반드시 여기를 거친다. 앱 객체 자체와 미들웨어
+배선은 패키지 ``__init__`` 이 소유하고, 이 모듈은 **함수와 상태만** 제공한다.
 
-``app`` 자체(및 미들웨어·예외핸들러·lifespan 등록)는 ``__init__`` 이 소유한다 — 여기서는 그 **함수/상태**
-만 제공하고 ``__init__`` 이 ``app`` 에 배선한다.
+별도 모듈로 떼어 둔 이유는 **순환 import** 다 — 라우터가 쓰는 함수를 ``__init__`` 에 두면
+``__init__``(라우터를 등록) ↔ 라우터(함수를 사용)가 서로를 import 하게 된다. 이 모듈은 어떤
+라우터도 import 하지 않으므로 그 고리가 생기지 않는다.
 """
 
 from __future__ import annotations
@@ -33,7 +32,7 @@ _ENV = os.getenv("PORTAL_API_ENV", "dev")
 _LOG = logging.getLogger("meta_extract.portal_api")
 
 
-# 069 P1-1: 앱 수명 PostgresUtil 싱글턴 — 기존엔 요청(트랜잭션)마다 PostgresUtil()+`with db:` 로
+# DB 접근 객체는 **앱 수명 동안 하나만** 둔다 — 요청마다 만들면 연결 풀이 매번 새로 생겼다 사라져
 # **풀을 생성·즉시 파괴**해 풀링 이득이 0(매 요청 TCP+auth 재수행·고부하 시 커넥션 폭증)이었다.
 # 지연 생성(최초 요청)·프로세스 공유·lifespan 종료 시 close. 생성 경합은 락으로 차단.
 _DB_SINGLETON: object | None = None
@@ -41,7 +40,7 @@ _DB_LOCK = threading.Lock()
 
 
 def _get_db() -> object:
-    """앱 수명 DB 싱글턴을 돌려준다(최초 호출 시 풀 1회 생성 — 069 P1-1)."""
+    """앱 전체가 공유하는 DB 접근 객체를 돌려준다(첫 호출 때 연결 풀이 한 번 열린다)."""
     global _DB_SINGLETON
     # 이중 검사 락(double-checked locking): 락 밖 첫 검사로 이미 생성된 정상 경로의 락 경합을 피하고,
     # 락 안에서 다시 검사해 경쟁 스레드가 풀을 중복 생성(2개)하지 않게 한다.
@@ -71,8 +70,14 @@ def _run_in_db(callback: Callable[[object], object]) -> object:
     """PostgresUtil 조회 트랜잭션에서 ``callback(conn)`` 을 실행하는 단일 seam.
 
     상세/다운로드/묶음 핸들러의 DB 접근은 모두 이 함수를 거친다(테스트는 이 함수를 patch 로
-    대체해 DB 없이 단위 검증). ``idempotent=True`` 조회 전용(쓰기 0, 헌법 6조).
-    069 P1-1: 요청당 풀 생성·파괴 대신 앱 수명 싱글턴(``_get_db``)을 재사용한다.
+    대체해 DB 없이 단위 검증). 요청마다 풀을 만들지 않고 앱 수명 객체를 재사용한다.
+
+    Args:
+        callback: 커넥션을 받아 조회를 수행하는 함수. **쓰기를 하면 안 된다** — 이 경로는
+            재시도 가능한 것으로 표시돼 있어, 쓰기가 섞이면 중복 반영될 수 있다.
+
+    Returns:
+        ``callback`` 의 반환값.
     """
     return _get_db().execute_in_transaction(callback, idempotent=True)
 
@@ -81,10 +86,15 @@ def _run_in_db_write(callback: Callable[[object], object]) -> object:
     """조회 seam(``_run_in_db``)과 분리한 write 트랜잭션(``idempotent=False``·commit) 공유 seam.
 
     원본 자산 payload·스키마는 무변경이나, 두 부류의 거버넌스 write 가 이 seam 을 공유한다:
-    (1) 미들웨어의 append-only 감사(``access_log`` 1행·013 FR-012·best-effort),
-    (2) 052 관계 검토 결정(``bulk_review``/``revise_edge``/``promote_relation_kind`` — graph_edge
-    status·relation_kind status 전이 + relation 감사). 테스트는 이 함수를 patch.
-    069 P1-1: 앱 수명 싱글턴 재사용.
+    (1) 미들웨어가 남기는 접근 기록(한 행씩 추가·실패해도 요청을 깨지 않음),
+    (2) 관계 검토 결정(``bulk_review``/``revise_edge``/``promote_relation_kind`` — graph_edge
+    status·relation_kind status 전이 + relation 감사). 테스트는 이 함수를 patch 한다.
+
+    Args:
+        callback: 커넥션을 받아 쓰기를 수행하는 함수.
+
+    Returns:
+        ``callback`` 의 반환값. 실패하면 트랜잭션이 통째로 롤백된다.
     """
     return _get_db().execute_in_transaction(callback, idempotent=False)
 
@@ -92,7 +102,15 @@ def _run_in_db_write(callback: Callable[[object], object]) -> object:
 def _parse_dt(value: str | None) -> datetime | None:
     """``YYYY-MM-DD`` 또는 ISO datetime 문자열을 ``datetime`` 으로 파싱한다.
 
-    빈 값은 ``None``(필터 비활성). 형식 오류는 ``HTTPException(422)`` 로 거부한다.
+    Args:
+        value: 날짜 문자열. 빈 값·``None`` 이면 필터를 걸지 않는다는 뜻이다.
+
+    Returns:
+        파싱된 ``datetime``, 또는 값이 없으면 ``None``.
+
+    Raises:
+        HTTPException: 형식이 틀렸을 때 422. **기본값으로 넘기지 않는다** — 사용자가 의도한
+            기간과 다른 결과를 조용히 보여주면 안 되기 때문이다.
     """
     if not value:
         return None
@@ -105,11 +123,19 @@ def _parse_dt(value: str | None) -> datetime | None:
 def _validated_interval(
     interval: str = Query("day", description="집계 단위: hour | day | week | month"),
 ) -> str:
-    """timeline 계열 라우트의 interval 화이트리스트 검증 Depends(069 FR-E6).
+    """시계열 라우트의 버킷 단위 값을 검증한다(허용 목록 밖이면 422).
 
-    종전 4개 핸들러가 각자 ``if interval not in TIMELINE_INTERVALS: raise HTTPException(422, …)`` 을
-    복제하던 것을 단일 의존성으로 통합한다(동작 동일 — 같은 화이트리스트·같은 422). 유효하면 그대로
-    반환해 핸들러가 주입받는다.
+    시계열 라우트들이 공유하는 **의존성**이다 — 핸들러마다 같은 검사를 복제하면 한 곳만
+    고쳐져 서로 어긋난다. 통과하면 값을 그대로 넘겨 핸들러가 주입받는다.
+
+    Args:
+        interval: 버킷 단위. 허용 목록은 시계열 공용 상수 하나뿐이다.
+
+    Returns:
+        검증을 통과한 값.
+
+    Raises:
+        HTTPException: 허용 목록 밖이면 422.
     """
     if interval not in TIMELINE_INTERVALS:
         raise HTTPException(
@@ -136,10 +162,16 @@ def _user_id_from_request(request: Request) -> str:
 
 
 def _record_access_safe(method: str, path: str, status_code: int, user_id: str) -> None:
-    """데이터 접근(성공 응답)을 ``access_log`` 에 1행 적재. 비대상·오류 응답은 무시(best-effort).
+    """성공한 데이터 조회를 접근 이력에 한 행 남긴다.
 
-    4xx/5xx 응답은 기록하지 않고, ``derive_access_action`` 이 데이터 라우트로 판정한 GET 만
-    append-only 로 적재한다(검색·상세·다운로드·묶음). 그 외(감사 뷰·health 등)는 None → skip.
+    **DB에 쓴다.** 실패해도 예외를 올리지 않는다(감사는 최선 노력 — 기록 때문에 요청이 깨지면 안 된다).
+
+    Args:
+        method: HTTP 메서드.
+        path: 요청 경로. 여기서 동작 이름과 대상 자산을 도출한다.
+        status_code: 응답 코드. **400 이상이면 기록하지 않는다** — 실패한 접근은 감사 대상이
+            아니다(무엇을 봤는지가 아니라 못 봤다는 뜻이므로).
+        user_id: 요청 주체.
     """
     if status_code >= 400:
         return
@@ -157,7 +189,17 @@ _PENDING_TASKS: set[asyncio.Task] = set()
 
 
 async def _record_access_bg(method: str, path: str, status_code: int, user_id: str) -> None:
-    """동기 DB write 를 스레드풀에서 수행하는 비차단 기록 태스크. 어떤 예외도 삼킨다(best-effort)."""
+    """기록 작업을 **응답과 분리해** 뒤에서 수행한다(스레드풀 경유).
+
+    동기 DB 쓰기를 응답 경로에서 기다리면 DB 가 느릴 때 모든 요청이 함께 느려진다.
+    어떤 예외도 삼키고 경고만 남긴다.
+
+    Args:
+        method: HTTP 메서드.
+        path: 요청 경로.
+        status_code: 응답 코드.
+        user_id: 요청 주체.
+    """
     try:
         await run_in_threadpool(_record_access_safe, method, path, status_code, user_id)
     except Exception:  # noqa: BLE001 — 감사 기록 실패가 서비스에 전파되면 안 됨(best-effort·D2)
@@ -165,12 +207,19 @@ async def _record_access_bg(method: str, path: str, status_code: int, user_id: s
 
 
 async def access_log_middleware(request: Request, call_next: Callable) -> object:
-    """데이터 접근 이력을 append-only 로 적재한다(013 US3·FR-008).
+    """접근 이력을 **추가만** 하는 방식으로 적재한다(수정·삭제 없음 — 감사 기록이므로).
 
     기록을 **응답 critical path 에서 분리**(fire-and-forget)한다 — 응답을 먼저 반환하고 기록은
     ``create_task`` 로 뒤에서 수행한다. 동기 DB write 를 await 하면 DB 지연/풀 고갈 시 모든 데이터
     응답이 지연되므로(best-effort 감사가 서비스 지연을 유발), await 하지 않는다(D2). 기록 실패·지연은
-    응답 상태·지연 어디에도 영향이 없다. 응답 객체는 변경 없이 그대로 반환.
+    응답 상태·지연 어디에도 영향이 없다.
+
+    Args:
+        request: 들어온 요청.
+        call_next: 다음 처리 단계. 이 결과를 **그대로** 돌려준다(응답을 건드리지 않는다).
+
+    Returns:
+        아래 단계가 만든 응답 객체 그대로.
     """
     response = await call_next(request)
     try:
@@ -187,23 +236,28 @@ async def access_log_middleware(request: Request, call_next: Callable) -> object
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # 부트스트랩: 백엔드 자기 레포 루트의 .env.{env} 로드 → 코어 init_settings(필수 env 검증). 1회만.
-    # 코어 src.config.bootstrap 이 아니라 백엔드 전용(service.bootstrap)을 쓴다 — 코어 것은 코어 레포 .env 를
-    # 로드하기 때문(레포 분리 077: 백엔드는 dataplatform-service/.env 를 로드해야 함).
+    """앱의 수명 주기 — 기동 시 설정을 확정하고, 종료 시 남은 작업과 DB 풀을 정리한다.
+
+    ⚠️ 부트스트랩은 **백엔드 전용**을 쓴다(코어 것이 아니라). 코어 부트스트랩은 코어 레포의
+    ``.env`` 를 읽기 때문에, 그걸 쓰면 백엔드가 남의 설정으로 뜬다.
+
+    종료 순서가 중요하다 — 감사 기록 태스크를 **먼저** 비운 뒤 DB 풀을 닫는다. 반대로 하면
+    아직 쓰기 중인 태스크가 닫힌 풀을 잡는다.
+    """
     from service.bootstrap import bootstrap_env
 
     bootstrap_env(_ENV)
     yield
-    # graceful shutdown: 남은 fire-and-forget 감사 기록 태스크를 드레인한다(best-effort·013 FR-012).
+    # 종료 시 남은 감사 기록 작업을 먼저 비운다(응답과 분리돼 뒤에서 돌던 것들).
     if _PENDING_TASKS:
         await asyncio.gather(*_PENDING_TASKS, return_exceptions=True)
-    # 069 P1-1: 앱 수명 DB 풀 정리(드레인 뒤 — 감사 write 가 풀을 쓸 수 있으므로 순서 중요).
+    # 그다음에 DB 풀을 닫는다 — **순서가 중요하다**. 먼저 닫으면 아직 쓰는 중인 감사 작업이 실패한다.
     _close_db_singleton()
 
 
-# 069 P1-4(권고): OS 연결 실패(인프라 다운·타임아웃)를 코드버그 500 과 구분해 **503** 으로 —
+# 검색 엔진 연결 실패는 **503** 으로 응답한다 — 코드 버그(500)와 구분해야 운영자가
 # 운영 알람·관측 구분용(ConnectionTimeout 은 ConnectionError 하위라 함께 잡힘). opensearchpy 는
-# 검색 백엔드(037) 필수 의존이나, 부분 설치 환경에서도 포탈 기동이 죽지 않게 지연·방어 임포트.
+# 알람을 나눌 수 있다. 라이브러리가 없는 환경에서도 앱이 뜨도록 import 는 지연·방어적으로 한다.
 try:
     from opensearchpy.exceptions import ConnectionError as OSConnectionError
 except ImportError:  # 미설치 환경 방어(검색 요청 시점에 별도 ImportError 로 드러남)

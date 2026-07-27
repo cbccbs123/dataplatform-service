@@ -1,4 +1,4 @@
-"""포탈 API 요청 스키마 — OpenAPI/Swagger 입력 폼용 (spec 042).
+"""요청 본문 스키마 — API 문서의 입력 폼을 만드는 데 쓴다.
 
 런타임 검증만 담당. clearance·JWT 서명 등 인증 정책은 ``deps``·``config`` 가 집행.
 """

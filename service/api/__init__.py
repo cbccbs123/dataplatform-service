@@ -1,11 +1,12 @@
-"""일반 도메인 포탈 API 패키지 (069 US-E FR-E6·A) — FastAPI ``app`` 조립·라우터 포함.
+"""포탈 API 패키지 — FastAPI 앱 조립과 라우터 등록.
 
-종전 단일 ``portal_api.py``(1689줄)를 책임별로 분할했다: 인프라(``_infra``)·검색(``routes_search``)·
-사용자 자산(``routes_assets``)·관리자 조회(``routes_admin``)·관계 검토 write(``routes_review``). 이
-``__init__`` 만 ``app`` 을 소유하고, lifespan·접근이력 미들웨어·OS 예외핸들러를 ``_infra`` 에서 가져와
-배선하며, 4개 라우터를 **원래 등록 순서**로 include 한다.
+**흐름에서의 위치**: 요청이 가장 먼저 닿는 곳이다. 여기서 앱을 만들고, 수명 주기·접근 기록
+미들웨어·예외 처리기를 붙인 뒤 라우터 넷을 등록한다. 실제 처리 로직은 각 라우터 모듈에 있다.
 
-진입점·테스트는 ``from service.api import app`` 을 쓴다(구 단일 ``portal_api.py`` 심은 레포 분리로 제거됨).
+``app`` 객체를 소유하는 곳은 **여기 하나**다 — 진입점도 테스트도 이 모듈에서 가져다 쓴다.
+
+⚠️ **라우터 등록 순서를 바꾸지 말 것.** FastAPI 는 먼저 등록된 경로부터 맞춰 보므로, 순서가
+바뀌면 어떤 경로가 다른 경로를 가려 404 가 난다.
 """
 
 from __future__ import annotations
@@ -22,10 +23,11 @@ from service.portal.auth.schemas import DevTokenRequest
 
 app = FastAPI(title="일반 도메인 포탈 API (010 P1)", lifespan=_infra.lifespan)
 
-# 접근이력 append-only 미들웨어(013 US3·FR-008) — _infra 가 fire-and-forget 로직·상태를 소유, 여기서 배선.
+# 접근 기록 미들웨어 — 실제 로직·상태는 ``_infra`` 가 갖고, 여기서는 앱에 붙이기만 한다.
 app.middleware("http")(_infra.access_log_middleware)
 
-# 069 P1-4: OpenSearch 연결 실패 → 503(코드버그 500 과 구분·운영 알람). opensearchpy 미설치 환경은 skip.
+# 검색 엔진 연결 실패는 503 으로 — 코드 버그(500)와 구분해야 알람을 나눌 수 있다.
+# 라이브러리가 없는 환경에서는 이 핸들러를 등록하지 않는다.
 if _infra.OSConnectionError is not None:
     app.add_exception_handler(_infra.OSConnectionError, _infra.os_unavailable_handler)
 

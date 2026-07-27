@@ -1,30 +1,33 @@
-"""013 US4 — 자산/FSM 대시보드 집계·목록 조회. 읽기 전용·결정적(헌법 3·6조)·LLM 0.
+"""자산 집계·목록 조회 — 대시보드 숫자와 목록 화면이 쓰는 읽기 전용 계층.
 
-자산 데이터·스키마는 쓰기 0(SELECT only). 도메인 제외 없음(2026-07-23 전면 제거·의료 특수 트랙 미운용).
-정렬은 COUNT(*) DESC + key ASC / created_at DESC + asset_id DESC tiebreak 으로 결정적이다.
+**흐름에서의 위치**: 관리자 라우트가 이 함수들을 부른다. SELECT 만 하며 쓰기는 없다.
+
+**정렬에 2차 키를 반드시 둔다**(개수 같으면 이름순, 시각 같으면 id 순) — 없으면 같은 요청이
+매번 다른 순서를 내놓아 화면이 흔들리고 페이징이 어긋난다.
 """
 from __future__ import annotations
 
 from typing import Any
 
 from src.config.filename_util import (
-    display_file_name,  # 표시 파일명 asset_id 프리픽스 제거(065 T605)
+    display_file_name,  # 화면용 파일명 — 저장 시 붙은 id 접두를 떼어 준다
 )
-from service.portal._ext_expr import ext_expr  # 확장자 SQL 정규식 단일 출처(069 D4·057 FR-104)
+from service.portal._ext_expr import ext_expr  # 확장자 추출 SQL 단일 출처(집계·목록이 같은 식을 써야 값이 맞는다)
 from service.portal._timeline_util import TIMELINE_INTERVALS, pivot_series
 
-# 도메인 제외 없음(2026-07-23 전면 제거) — 의료 특수 트랙 미운용이라 통계·목록은 도메인 무관 균일 집계.
+# 도메인별 제외는 없다 — 통계·목록 모두 전 도메인을 균일하게 센다.
 # 파일 확장자(file_ext) = fs_path 마지막 .세그먼트(소문자·없으면 NULL). 단일 출처 ext_expr(비한정 fs_path).
 _EXT_EXPR = ext_expr()
 
-# 054 관리자 스냅샷 버킷(계보 현황 화면) — FSM status 를 운영 관점 5버킷으로 롤업.
+# 운영 관점 5버킷 — 세분화된 처리 상태를 화면이 이해할 단위로 묶는다.
 # 버킷 순서 = 응답/집계 열거 순서(결정적). relation_proposed 는 registered 중 관계 제안이 있는 하위집합.
 _SNAPSHOT_BUCKETS = ("processing", "deferred", "registered", "failed", "relation_proposed")
-# processing = "진행 중" FSM 상태 4종. C1: classified 는 status 값이 아니라 분류 결과 표식이므로 제외.
+# '진행 중'에 해당하는 상태 4종. ⚠️ classified 는 여기 넣지 않는다 — 그것은 처리 단계가
+# 아니라 분류 결과 표식이라, 넣으면 이미 끝난 자산이 진행 중으로 잡힌다.
 _PROCESSING_STATUSES = ("received", "routing", "classifying", "extracting")
 # relation_proposed 판별용 계보 activity(자산에 관계 제안이 붙은 lineage 기록).
 _RELATION_PROPOSED_ACTIVITY = "relations.proposed.v1"
-_RELATION_SCOPES = ("period", "alltime")  # 검증은 API 계층(G3) 책임·여기선 값만 사용
+_RELATION_SCOPES = ("period", "alltime")  # 값 검증은 API 계층 몫 — 여기서는 쓰기만 한다
 # 자산 생성 추이 group_by 화이트리스트 → 컬럼식(고정 매핑·사용자 입력은 키로만 조회·인젝션 안전).
 # file_ext 는 평컬럼이 아닌 확장자 정규식(_EXT_EXPR) — 단일 테이블(asset) 쿼리라 fs_path 비한정 안전.
 _GROUP_COLS = {"modality": "modality", "status": "status", "domain": "domain_label",
@@ -34,10 +37,17 @@ _GROUP_COLS = {"modality": "modality", "status": "status", "domain": "domain_lab
 def _relation_proposed_exists(pfx: str, *, scoped: bool) -> str:
     """asset_lineage 에 relation 제안 기록이 있는지 검사하는 EXISTS 조각.
 
-    ``pfx`` = asset 테이블 접두("" 단일 테이블 / "a." JOIN 모호성 방지). EXISTS 서브쿼리의
-    ``asset_lineage l`` 은 자체 alias 라 바깥 asset 컬럼과 모호성이 없다. ``scoped`` 면 관계 제안이
-    발생한 기간(occurred_at)을 ``%s,%s`` 로 바인딩(요청 §2.2: 자산 created 기간 = 관계 occurred 기간).
-    ``%s`` 순서 = activity → (scoped 면) occurred_since → occurred_until.
+    서브쿼리 쪽은 자체 별칭을 쓰므로 바깥 테이블과 컬럼이 겹치지 않는다 — 접두사를 신경 쓸
+    곳은 바깥 asset 컬럼뿐이다.
+
+    Args:
+        pfx: 바깥 asset 테이블 접두사. 조인 경로에서는 ``"a."``, 단일 테이블이면 빈 문자열 —
+            **틀리면 컬럼이 모호해져 쿼리가 실패한다**.
+        scoped: 관계 제안 시점을 기간으로 좁힐지. 켜면 파라미터 자리가 **2개 늘어난다**.
+
+    Returns:
+        EXISTS SQL 조각. 파라미터 순서는 activity → (좁힐 때) 시작 → 끝이며, 호출부는 이
+        순서대로 값을 넣어야 한다.
     """
     occ = " AND l.occurred_at >= %s AND l.occurred_at < %s" if scoped else ""
     return (f"EXISTS (SELECT 1 FROM asset_lineage l WHERE l.asset_id = {pfx}asset_id "
@@ -51,7 +61,18 @@ def _snapshot_bucket_predicate(bucket: str, pfx: str, *, relation_scope: str,
     ``pfx`` = asset 테이블 접두("" / "a."). relation_scope='period' 이고 since/until 이 둘 다 있으면
     EXISTS 에 occurred_at 기간을 바인딩한다(period 여도 기간 미지정이면 스코프 없음). 'alltime' 이면
     기간 조건을 넣지 않는다. 알 수 없는 버킷은 방어적으로 ``FALSE`` 를 돌려 0행을 만든다(화이트리스트
-    검증은 API 계층 G3 책임). status 리터럴은 고정 SQL(사용자 입력 아님)·인젝션 안전.
+    검증은 API 계층이 한다). 상태 문자열은 코드 상수라 사용자 입력이 아니다.
+
+    Args:
+        bucket: 운영 5버킷 중 하나. **모르는 값이면 0행 조건**을 돌려준다(전체를 반환하지 않는다).
+        pfx: asset 테이블 접두사(조인 경로면 ``"a."``).
+        relation_scope: ``period`` 면 관계 제안 시점을 자산 생성 기간으로 좁히고, ``alltime``
+            이면 기간을 보지 않는다. period 라도 기간이 없으면 좁히지 않는다.
+        since: 기간 시작(포함).
+        until: 기간 끝(미포함).
+
+    Returns:
+        ``(WHERE 조각, 파라미터 목록)``. 둘의 순서가 맞물려야 하므로 함께 돌려준다.
     """
     if bucket == "processing":
         lits = ", ".join(f"'{s}'" for s in _PROCESSING_STATUSES)
@@ -69,14 +90,20 @@ def _snapshot_bucket_predicate(bucket: str, pfx: str, *, relation_scope: str,
         if scoped:
             params += [since, until]
         return f"{pfx}status = 'registered' AND {neg}{exists}", params
-    return "FALSE", []  # 방어적: 미지의 버킷은 0행(정상 경로는 G3 화이트리스트로 차단)
+    return "FALSE", []  # 모르는 버킷은 0행 — 조용히 전체를 반환하는 것보다 안전하다
 
 
 def _period_clause(since: Any, until: Any) -> tuple[str, list[Any]]:
     """생성일(created_at) 기간 필터 WHERE 절·파라미터(단일 테이블 asset 전용·비한정).
 
-    to(until) 는 exclusive(``< %s``) — query_assets·timeline·다른 API 와 동일 규칙. 미지정이면 전체.
-    (2026-07-23: 도메인 제외 전면 제거 — 조건이 하나도 없으면 WHERE 절을 아예 만들지 않는다.)
+    끝은 **미포함**이다 — 다른 조회들과 같은 규칙이라야 화면 곳곳의 수치가 맞물린다.
+
+    Args:
+        since: 시작(포함). ``None`` 이면 하한 없음.
+        until: 끝(미포함). ``None`` 이면 상한 없음.
+
+    Returns:
+        ``(WHERE 절, 파라미터)``. 조건이 없으면 절은 빈 문자열이다.
     """
     conds: list[str] = []
     params: list[Any] = []
@@ -92,17 +119,25 @@ def _period_clause(since: Any, until: Any) -> tuple[str, list[Any]]:
 
 def asset_stats(conn: Any, *, since: Any = None, until: Any = None,
                 snapshot_buckets: bool = False) -> dict[str, Any]:
-    """전체 자산 집계(status·modality·domain·file_ext·date별·총계·결정적·FR-009e·도메인 제외 없음).
+    """전체 자산을 여러 기준으로 집계한다 — 상태·모달리티·도메인·확장자·날짜별과 총계.
 
-    ``since``/``until``(생성일 from/to·to exclusive·보완 v6) 지정 시 6개 집계 전부 기간 스코프
-    (대시보드 기간 필터가 파일 포맷·모달리티·일자 분포에 일관 반영). 미지정이면 전체 기간.
+    기간을 주면 **여섯 집계 전부**가 같은 기간으로 좁혀진다 — 하나만 전체 기간이면
+    화면 안에서 수치가 서로 어긋난다. 끝은 미포함이다.
 
-    ``snapshot_buckets=True``(054·계보 현황 화면·FR-201/202) 지정 시 응답에 ``by_snapshot_bucket``
-    (운영 5버킷 count·``_SNAPSHOT_BUCKETS`` 순서·0건도 항상 포함)을 추가한다. 버킷 자산집합은 total 과
-    **동일한 ``_period_clause`` 스코프**(created_at 기간·도메인 제외 없음)라 ``sum(by_snapshot_bucket)==total``
-    이 보장된다. relation_proposed 판별(EXISTS)만은 관계 제안 유무를 전 기간에서 보는 alltime(FR-202:
-    자산 created 기간 안이면 과거 관계 제안도 반영). ``snapshot_buckets=False``(기본)면 기존 응답·SQL 이
-    완전히 불변이다(하위호환·FILTER 쿼리 미실행).
+    5버킷 집계는 총계와 **같은 기간 조건**을 쓴다 — 그래야 버킷 합이 총계와 정확히 맞아,
+    화면이 비율을 계산해도 100%가 된다. 단 '관계 제안됨' 판별만은 기간을 보지 않는다:
+    기간 안에 만들어진 자산이면, 관계가 언제 제안됐든 제안된 자산으로 센다.
+
+    Args:
+        since: 생성일 시작(**포함**). ``None`` 이면 기간 제한 없음.
+        until: 생성일 끝(**미포함**) — 하루 단위로 끊을 때 경계가 겹치지 않게 한다.
+        snapshot_buckets: 5버킷 집계를 함께 낼지. **켜면 쿼리가 하나 더 돈다** —
+            필요할 때만 켠다(끄면 응답 모양도 그대로다).
+
+    Returns:
+        ``{total, by_status, by_modality, by_domain, by_file_ext, by_date}``.
+        ``snapshot_buckets=True`` 면 ``by_snapshot_bucket`` 이 추가되며, **0건 버킷도 항상**
+        포함되고 그 합은 ``total`` 과 일치한다(화면이 비율을 계산할 수 있게).
     """
     where, p = _period_clause(since, until)
     with conn.cursor() as cur:
@@ -136,14 +171,22 @@ def _snapshot_bucket_counts(cur: Any, where: str, period_params: list[Any]) -> l
 
     ``where``/``period_params`` = total 과 동일한 ``_period_clause``(created_at 기간·도메인 제외 없음) →
     버킷 자산집합이 total 과 같은 스코프라 ``sum==total`` 이 보장된다. 서브쿼리에서 자산별로
-    관계 제안 존재 여부(rp)를 EXISTS 로 계산(FR-202: alltime·occurred_at 기간 없음)한 뒤 바깥에서
-    FILTER 로 5버킷을 한 번에 센다. status IN 리터럴은 ``_PROCESSING_STATUSES`` 고정 SQL(인젝션 안전).
+    관계 제안 여부를 먼저 계산한 뒤(기간 조건 없이) 바깥에서
+    FILTER 로 5버킷을 한 번에 센다. 상태 문자열은 코드 상수라 사용자 입력이 아니다.
+
+    Args:
+        cur: 열려 있는 커서(호출부의 트랜잭션을 공유한다).
+        where: 총계와 **같은 기간 절** — 달라지면 버킷 합이 총계와 어긋난다.
+        period_params: 그 절에 대응하는 파라미터.
+
+    Returns:
+        5버킷 count 목록(0건 버킷도 포함·순서 고정).
 
     **파라미터 순서**: SELECT 리스트의 EXISTS(``activity=%s``)가 FROM/WHERE 의 기간 ``%s`` 보다 먼저
     등장하므로 ``[_RELATION_PROPOSED_ACTIVITY, *period_params]`` 순으로 바인딩한다(순서 어긋남 방지).
     FILTER 리스트 순서 = ``_SNAPSHOT_BUCKETS`` 순서(processing→deferred→registered→failed→relation_proposed).
     """
-    proc = ", ".join(f"'{s}'" for s in _PROCESSING_STATUSES)  # C1: classified 제외 4status 리터럴
+    proc = ", ".join(f"'{s}'" for s in _PROCESSING_STATUSES)  # 진행 중 상태 4종(classified 제외)
     sql = (
         f"SELECT "
         f"count(*) FILTER (WHERE status IN ({proc})), "                 # processing
@@ -166,33 +209,42 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
                  created_from: Any = None, created_to: Any = None,
                  snapshot_bucket: str | None = None, relation_scope: str = "period",
                  limit: int = 50, offset: int = 0, with_content: bool = False) -> dict[str, Any]:
-    """자산 목록(FSM 단계·modality·domain·file_ext·날짜 필터·페이징·도메인 제외 없음·created_at DESC·FR-009f).
+    """자산 목록을 필터·페이징해 돌려준다(최신순).
 
-    각 행은 ``file_ext``(fs_path 확장자·057 FR-104·by_file_ext 집계와 동일 파생)를 포함한다 —
-    프론트가 파일명을 다시 파싱하지 않도록 표시필드를 하향(하위호환 필드 추가).
+    각 행에 확장자를 포함한다. **집계와 같은 식으로 뽑는다** — 다르면 목록과 통계가 어긋난다.
+    파일명을 화면에서 다시 뜯지 않도록 표시용 필드도 함께 내린다.
 
-    ``with_content=True``(보완 v6) — asset_metadata LEFT JOIN 으로 행마다 요약·키워드(+제목=파일명)
-    동반(모달리티 상세에서 자산을 안 열고도 내용 파악). 메타 미적재 자산은 LEFT JOIN 으로 행은 남되
-    summary/keywords 가 None. 기본은 가벼운 목록(하위호환).
+    ⚠️ 두 테이블 모두 ``asset_id``·``created_at`` 컬럼을 가진다 — 조인이 붙는 경로에서 접두사를
+    빼면 "어느 쪽 컬럼이냐"로 쿼리가 실패한다. 그래서 조인 경로는 ``a.`` 한정, 단일 테이블 경로는
+    비한정으로 조건을 만든다. 조건과 값은 한 곳에 (템플릿, 값) 쌍으로 쌓아, 늘어놓는 순서가
+    어긋날 수 없게 했다.
 
-    ``snapshot_bucket``(054·계보 현황) 지정 시 status 를 운영 5버킷으로 롤업해 필터한다. 이때
-    ``status`` 인자는 **무시**(C3: 버킷 우선)하고 버킷 술어를 대신 넣는다. ``relation_scope='period'``
-    (기본)이면 relation_proposed/registered 판별의 관계 제안 기간을 자산 created 기간(created_from/to)에
-    맞춰 스코프하고, ``'alltime'`` 이면 전 기간에서 관계 제안 유무만 본다. bucket 화이트리스트/relation_scope
-    검증은 API 계층(G3) 책임이며, 여기서는 알 수 없는 버킷을 방어적으로 0행 처리한다.
-    ``snapshot_bucket=None`` 이면 기존 동작·SQL 이 완전히 불변이다(하위호환).
+    Args:
+        status: 처리 상태 필터. ``snapshot_bucket`` 을 함께 주면 **무시된다**.
+        modality: 모달리티 필터.
+        domain: 도메인 필터.
+        file_ext: 확장자 필터(집계와 같은 식으로 뽑은 값과 비교한다).
+        created_from: 생성일 시작(포함).
+        created_to: 생성일 끝(미포함).
+        snapshot_bucket: 운영 5버킷으로 묶어 필터. **``status`` 보다 우선**하며, 모르는
+            값이면 0행을 돌려준다(전체를 반환하지 않는다).
+        relation_scope: ``period``(기본)면 관계 제안 여부를 자산 생성 기간 안에서만 보고,
+            ``alltime`` 이면 기간과 무관하게 본다.
+        limit: 페이지 크기.
+        offset: 건너뛸 행 수.
+        with_content: 켜면 행마다 요약·키워드가 붙는다(메타 테이블을 조인). 메타가 없는
+            자산도 행은 남고 그 값만 ``None`` 이다. **끄면 조인 없이 가볍게** 돈다.
 
-    **모호성 주의**: ``asset`` 과 ``asset_metadata`` 둘 다 ``asset_id``·``created_at`` 컬럼을 가져,
-    content 경로의 JOIN 에서 비한정 컬럼은 PG 오류가 난다. 그래서 content WHERE/SELECT/ORDER BY 는
-    ``a.`` 한정(``_where("a.")``), COUNT·비콘텐츠 SELECT 는 단일 테이블이라 비한정(``_where("")``)으로 쓴다.
-    조건·파라미터는 ``specs`` 한 곳에서 (템플릿, 값리스트) 쌍으로 누적해 순서 불변식을 구조적으로 보장한다.
+    Returns:
+        ``{rows, total, limit, offset}``. ``total`` 은 같은 필터로 센 전체 건수라 화면의
+        쪽수와 목록이 어긋나지 않는다. ``rows`` 는 생성 최신순.
     """
     # (조건템플릿, 파라미터리스트)를 한 곳에서 누적 → 조건 순서와 파라미터 순서가 구조적으로 일치(불변식 내재화).
     # 템플릿의 ``{a}`` = 테이블 접두사 자리 — 전 경로 "a." 별칭 통일(EXISTS 상관 버그 방지·아래 _where).
     # 값리스트는 execute 시 순서대로 확장(extend). specs 가 비면 _where 가 WHERE 절을 만들지 않는다.
     specs: list[tuple[str, list[Any]]] = []
     if snapshot_bucket:
-        # C3: snapshot_bucket 우선 — status 스펙은 추가하지 않고 버킷 술어로 대체한다.
+        # 버킷이 주어지면 상태 조건 대신 버킷 조건을 쓴다(둘을 함께 걸면 서로 모순될 수 있다).
         # 버킷 술어 파라미터 순서(activity→occurred_since→occurred_until)를 specs 값리스트에 그대로 실어
         # WHERE 순서와 파라미터 순서가 어긋나지 않게 한다({a} 접두로 content/비content 경로 공용).
         frag, bp = _snapshot_bucket_predicate(
@@ -214,7 +266,15 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
         specs.append(("{a}created_at < %s", [created_to]))
     params = [v for _t, vs in specs for v in vs]
 
-    def _where(pfx: str) -> str:  # specs 를 접두사 채워 WHERE 로. 조건 0 개면 절 자체를 만들지 않는다.
+    def _where(pfx: str) -> str:
+        """조건들을 테이블 접두사와 함께 WHERE 절로 만든다.
+
+        Args:
+            pfx: 컬럼 접두사. 조인 경로에서는 ``"a."`` 를 줘야 컬럼이 모호해지지 않는다.
+
+        Returns:
+            WHERE 절. 조건이 없으면 빈 문자열.
+        """
         if not specs:
             return ""
         return " WHERE " + " AND ".join(t.format(a=pfx) for t, _vs in specs)
@@ -224,7 +284,7 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
         # 비한정이면 asset_lineage 동명 컬럼에 바인딩돼 상관이 풀리던 버그를 별칭 통일로 봉인.
         cur.execute("SELECT COUNT(*) FROM asset a" + _where("a."), params)
         total = int(cur.fetchone()[0])
-        # FR-104(057): 행에 file_ext 하향(하위호환) — by_file_ext 집계와 동일한 _EXT_EXPR(fs_path 확장자)
+        # 행에도 확장자를 실어 준다 — 집계와 **같은 식**을 써야 목록·통계가 맞물린다
         # 로 파생해 행 file_ext == 집계 버킷 키(프론트 파일명 파싱·폴백 확장자 집계 제거·admin B2).
         # content JOIN 경로에서도 fs_path 는 asset 에만 있어 비한정 참조가 모호하지 않다(단일 출처식).
         if with_content:
@@ -252,16 +312,23 @@ def query_assets(conn: Any, *, status: str | None = None, modality: str | None =
                  "file_name": display_file_name(fp) if fp else None,
                  "created_at": ts.isoformat() if ts is not None else None, "file_ext": fx}
                 for aid, st, mod, dl, fp, ts, fx in cur.fetchall()]
-    # FR-701: 페이징 봉투 통일({rows,total,limit,offset}) — 프론트 전체 목록 페이지/맨앞·맨끝 이동 계약.
+    # 페이징 응답 모양을 통일한다({rows,total,limit,offset}) — 화면이 맨앞·맨끝으로 이동하려면 total 이 필요하다.
     return {"rows": rows, "total": total, "limit": limit, "offset": offset}
 
 
 def modality_detail(conn: Any, modality: str, *, since: Any = None,
                     until: Any = None) -> dict[str, Any]:
-    """단일 모달리티 스코프 집계(보완 v6) — 총계 + 확장자·상태·일자별. 결정적·LLM 0(도메인 제외 없음).
+    """한 모달리티 안을 파고들어 집계한다 — 총계와 확장자·상태·일자별 분포.
 
-    모달리티 드릴다운(예: video 안에서 mp4/mov 분포·일자 추이·FSM 상태). modality 는 %s 바인딩.
-    ``since``/``until``(생성일 from/to·to exclusive) 지정 시 개요(asset_stats) 기간 필터와 일관 스코프.
+    예: 영상 안에서 mp4/mov 비율, 처리 상태 분포, 날짜별 추이.
+
+    Args:
+        modality: 대상 모달리티.
+        since: 생성일 시작(포함). 개요 집계와 **같은 기준**이라 두 화면 수치가 맞물린다.
+        until: 생성일 끝(미포함).
+
+    Returns:
+        ``{total, by_file_ext, by_status, by_date}``.
     """
     conds = ["modality = %s"]
     p: list[Any] = [modality]
@@ -271,6 +338,7 @@ def modality_detail(conn: Any, modality: str, *, since: Any = None,
     if until is not None:
         conds.append("created_at < %s")
         p.append(until)
+    # 아래 네 질의가 **같은 조건·같은 값**을 공유한다 — 하나라도 다르면 총계와 분포가 어긋난다.
     where = "WHERE " + " AND ".join(conds)
     with conn.cursor() as cur:
         cur.execute(f"SELECT COUNT(*) FROM asset {where}", p)
@@ -292,15 +360,22 @@ def modality_detail(conn: Any, modality: str, *, since: Any = None,
 def asset_timeline(conn: Any, *, since: Any = None, until: Any = None,
                    interval: str = "day", group_by: str | None = None,
                    modality: str | None = None) -> dict[str, Any]:
-    """자산 생성 일자 추이(보완 v6·계보 timeline 과 동일 멀티시리즈 패턴). 결정적·LLM 0(도메인 제외 없음).
+    """자산이 언제 얼마나 만들어졌는지 추이를 낸다.
 
-    ``group_by``(modality/status/domain) 주면 멀티시리즈(시리즈 key ASC·버킷 ASC), 미지정이면 단일
-    시리즈({interval, buckets}). trunc 화이트리스트(f-string 안전)·기간(since/until)은 %s 바인딩.
+    Args:
+        since: 기간 시작(포함).
+        until: 기간 끝(미포함).
+        interval: 버킷 단위. **허용 목록 밖이면 일 단위로 접는다** — SQL 에 문자열로 박히는 값이라
+            임의 입력을 그대로 쓰지 않는다.
+        group_by: 시리즈를 가를 기준(모달리티·상태·도메인). 주면 응답이 **여러 시리즈**로 바뀐다.
+        modality: 특정 모달리티로 범위를 좁힌다.
 
-    ``modality``(057 FR-302·모달리티 현황 BFF timeline) 지정 시 그 모달리티로 스코프한다(WHERE modality=%s·
-    %s 바인딩). 미지정(기본 None)이면 기존 SQL·동작이 완전히 불변이다(하위호환·바이트 동일).
+    Returns:
+        단일: ``{interval, buckets}`` / 다중: 시리즈 목록. 시리즈·버킷 모두 정렬이 고정된다.
     """
+    # ⚠️ 버킷 단위는 아래 SQL 에 **문자열로 직접 박힌다** — 허용 목록을 통과한 값만 쓴다.
     trunc = interval if interval in TIMELINE_INTERVALS else "day"
+    # 조건과 값을 짝지어 쌓는다 — 따로 관리하면 늘어놓는 순서가 어긋나 엉뚱한 값이 박힌다.
     conds: list[str] = []
     params: list[Any] = []
     if modality:
@@ -314,7 +389,9 @@ def asset_timeline(conn: Any, *, since: Any = None, until: Any = None,
         params.append(until)
     where = (" WHERE " + " AND ".join(conds)) if conds else ""
     with conn.cursor() as cur:
+        # 시리즈를 가르면 응답 모양 자체가 달라진다(단일 buckets → series 배열).
         if group_by in _GROUP_COLS:
+            # 컬럼명도 SQL 에 직접 박히므로 매핑을 통과한 값만 쓴다.
             gcol = _GROUP_COLS[group_by]
             cur.execute(
                 f"SELECT {gcol} AS key, date_trunc('{trunc}', created_at) AS bkt, COUNT(*) "
@@ -329,18 +406,26 @@ def asset_timeline(conn: Any, *, since: Any = None, until: Any = None,
 
 def build_modality_overview(conn: Any, modality: str, *, since: Any = None, until: Any = None,
                             interval: str = "day", limit: int = 50) -> dict[str, Any]:
-    """모달리티 현황 BFF(057 FR-302) — 드릴다운 집계 + 생성 추이 + 첫 페이지 목록을 **한 트랜잭션·1회 응답**.
+    """모달리티 현황 화면이 필요한 셋(집계·추이·첫 페이지)을 **한 트랜잭션에서 한 번에** 만든다.
 
-    프론트 모달리티 상세가 stats+timeline+first-page 를 3~4회 순차 호출하던 것을 묶는다. 검증된 순수
-    조회 함수 3종을 그대로 재사용해 재구현 0·의료 제외 상속·결정성·LLM 0(``build_dashboard_summary``
-    조합 패턴). 세 슬라이스 전부 같은 modality/기간(created_at)으로 스코프해 화면 정합을 보장한다.
+    화면이 서너 번 부르던 것을 한 번으로 묶는다. 계산은 검증된 조회 함수 셋을 그대로 재사용하며,
+    **세 조각 모두 같은 모달리티·같은 기간**으로 맞춰 화면 안에서 수치가 어긋나지 않게 한다.
 
     - ``detail``: ``modality_detail`` — 확장자·상태·일자 분포 + 총계.
-    - ``timeline``: ``asset_timeline(modality=…)`` — 생성 추이(interval=month 지원 → 프론트 일→월 롤업
-      제거·FR-303 동형). 단일 시리즈({interval, buckets}).
-    - ``first_page``: ``query_assets(with_content=True)`` 첫 페이지(요약·키워드 동반·페이징 봉투).
+    - ``timeline``: 생성 추이 단일 시리즈(``{interval, buckets}``).
+    - ``first_page``: 목록 첫 페이지(요약·키워드 동반).
 
-    ``interval`` 은 ``asset_timeline`` 화이트리스트(day/hour/month·그 외 day 폴백; API 계층 422).
+    Args:
+        conn: 열려 있는 연결 — 세 조각이 같은 트랜잭션을 공유해야 수치가 어긋나지 않는다.
+        modality: 대상 모달리티.
+        since: 기간 시작(포함). ``None`` 이면 전체 기간.
+        until: 기간 끝(미포함).
+        interval: 추이를 끊을 단위. **허용 밖 값은 조용히 일 단위로 접힌다** — 값 검증은
+            API 계층(422)이 맡는다.
+        limit: 첫 페이지에 담을 행 수.
+
+    Returns:
+        ``{detail, timeline, first_page}``.
     """
     detail = modality_detail(conn, modality, since=since, until=until)
     timeline = asset_timeline(conn, since=since, until=until, interval=interval, modality=modality)
