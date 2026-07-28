@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -340,7 +340,7 @@ def dashboard_summary_endpoint(
     if monthly_interval not in ("day", "month"):
         raise HTTPException(status_code=422,
                             detail=f"monthly_interval 은 day|month 만 허용: {monthly_interval!r}")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return _infra._run_in_db(
         lambda conn: build_dashboard_summary(
             conn, now=now, months=months, monthly_interval=monthly_interval))

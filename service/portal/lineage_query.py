@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from service.portal._ext_expr import ext_expr  # 확장자 추출 SQL 단일 출처(집계끼리 값이 맞아야 한다)
+from service.portal._ext_expr import (
+    ext_expr,  # 확장자 추출 SQL 단일 출처(집계끼리 값이 맞아야 한다)
+)
 from service.portal._timeline_util import TIMELINE_INTERVALS, pivot_series
 
 # '관계 제안됨'을 판별하는 활동 이름은 자산 집계 쪽과 **같은 상수**를 쓴다 —

@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from service.portal.access_log import (
     access_log_overview,
@@ -66,7 +66,7 @@ class RecordAccessTest(unittest.TestCase):
 
 class QueryStatsShapeTest(unittest.TestCase):
     def test_query_shape(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([(2,), [("id1", "search", "u1", None, ts), ("id2", "asset_view", "u1", "a9", ts)]])
         out = query_access_logs(conn, user_id="u1")
         self.assertEqual(out["total"], 2)
@@ -85,8 +85,8 @@ class QueryStatsShapeTest(unittest.TestCase):
 
 class TimelineShapeTest(unittest.TestCase):
     def test_bucket_shape(self):
-        b0 = datetime(2026, 6, 29, tzinfo=timezone.utc)
-        b1 = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        b0 = datetime(2026, 6, 29, tzinfo=UTC)
+        b1 = datetime(2026, 6, 30, tzinfo=UTC)
         # timeline 은 GROUP BY 단일 execute → fetchall 1회
         conn = _Conn([[(b0, 2), (b1, 5)]])
         out = access_log_timeline(conn)
@@ -125,7 +125,7 @@ class TimelineShapeTest(unittest.TestCase):
         self.assertIn("search", params)
 
     def test_group_by_action_multi_series(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         # group_by 시 (key, bucket, count) 행 → 멀티시리즈 피벗
         conn = _Conn([[("search", ts, 5), ("download", ts, 2)]])
         out = access_log_timeline(conn, group_by="action")
@@ -157,7 +157,7 @@ class AccessLogOverviewTest(unittest.TestCase):
         return _Conn([(total,), by_action, [("u1", total)], timeline_rows])
 
     def test_overview_shape_total_by_action_timeline(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = self._conn(3, [("search", 2), ("asset_view", 1)],
                           [("search", ts, 2), ("asset_view", ts, 1)])
         out = access_log_overview(conn)
@@ -168,7 +168,7 @@ class AccessLogOverviewTest(unittest.TestCase):
 
     def test_overview_action_scopes_timeline_only(self):
         # action 은 timeline 을 드릴다운(단일 action 시리즈)·stats(total/by_action)는 기간 전체 KPI.
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = self._conn(3, [("search", 2)], [("search", ts, 2)])
         access_log_overview(conn, action="search")
         calls = conn._cur.calls
@@ -187,8 +187,8 @@ class AccessLogOverviewTest(unittest.TestCase):
         self.assertIn("date_trunc('month'", conn._cur.calls[3][0])
 
     def test_overview_period_bound_on_all_queries(self):
-        dt1 = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        dt2 = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        dt1 = datetime(2026, 6, 1, tzinfo=UTC)
+        dt2 = datetime(2026, 6, 30, tzinfo=UTC)
         conn = self._conn(0, [], [])
         access_log_overview(conn, since=dt1, until=dt2)
         for sql, params in conn._cur.calls:

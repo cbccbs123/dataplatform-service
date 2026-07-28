@@ -6,7 +6,12 @@ os.environ.setdefault("PORTAL_AUTH_DISABLED", "1")  # dev bypass(anonymous=publi
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from service.api import app, _infra, routes_admin, routes_assets  # noqa: E402  (레포 분리: 코어 src.app 제거·백엔드 app 직접 사용)
+from service.api import (  # noqa: E402  (레포 분리: 코어 src.app 제거·백엔드 app 직접 사용)
+    _infra,
+    app,
+    routes_admin,
+    routes_assets,
+)
 
 
 class HistoryEndpointsTest(unittest.TestCase):

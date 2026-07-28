@@ -18,9 +18,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from service.api import _infra
-from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modalities_csv
 from service.portal.auth import Principal, require_principal
 from service.portal.search_group import group_ranked
+from src.config.search_modalities import VALID_SEARCH_MODALITIES, parse_modalities_csv
 from src.registry.access_tier import project_ext_meta
 from src.registry.ext_meta_field_registry import fetch_access_tiers
 from src.search.search_filters import parse_search_filters

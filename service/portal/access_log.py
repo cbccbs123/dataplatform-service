@@ -11,8 +11,8 @@ import json
 import re
 from typing import Any
 
-from src.database.ids import uuid7
 from service.portal._timeline_util import TIMELINE_INTERVALS, pivot_series
+from src.database.ids import uuid7
 
 # /assets/{seg} 의 seg 가 자산 단건인지 판정하는 UUID 형식(대소문자 무관). 비-UUID(예약/컬렉션
 # 세그먼트·오타)는 감사 대상에서 제외한다 — ``derive_access_action`` 설명 참조.

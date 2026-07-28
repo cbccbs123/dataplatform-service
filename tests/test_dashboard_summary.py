@@ -6,10 +6,10 @@ DB·LLM 불필요: 6개 순수 조회 함수(access/lineage/asset stats·timelin
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from unittest.mock import MagicMock, patch
 
-_NOW = datetime(2026, 7, 1, 15, 30, tzinfo=timezone.utc)  # 고정 주입 시각(창 계산 결정적)
+_NOW = datetime(2026, 7, 1, 15, 30, tzinfo=UTC)  # 고정 주입 시각(창 계산 결정적)
 
 
 class TestBuildDashboardSummary(unittest.TestCase):

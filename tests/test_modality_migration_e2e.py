@@ -48,9 +48,9 @@ class TestModalityCanonicalV292(unittest.TestCase):
         load_dotenv(".env.dev", override=False)
         from src.config.settings import init_settings
         init_settings("dev")
+        from service.portal.asset_stats import asset_stats
         from src.database.postgres_util import PostgresUtil
         from src.file.file_type_defs import CANONICAL_MODALITIES
-        from service.portal.asset_stats import asset_stats
         db = PostgresUtil()
         with db:
             with db.transaction() as conn:

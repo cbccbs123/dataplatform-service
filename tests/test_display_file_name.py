@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import unittest
 
-from src.config.filename_util import display_file_name, strip_asset_id_prefix
 from service.portal.search_group import display_name
+from src.config.filename_util import display_file_name, strip_asset_id_prefix
 
 _UUID = "018f0000-0000-7000-8000-000000000271"
 

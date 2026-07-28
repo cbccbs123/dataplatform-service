@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from service.portal.asset_stats import _RELATION_PROPOSED_ACTIVITY
 from service.portal.lineage_query import (
@@ -45,7 +45,7 @@ class _SeqConn:
 
 class QueryLineageTest(unittest.TestCase):
     def test_shape_and_order_query(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         rows = [("ingest.received.v1", "run_ingest", {}, {}, ts),
                 ("ingest.registered.v1", "run_ingest", {}, {"channels": 2}, ts)]
         out = query_asset_lineage(_Conn(rows), "a1")
@@ -61,7 +61,7 @@ class QueryLineageTest(unittest.TestCase):
 
 class QueryLineageFeedTest(unittest.TestCase):
     def test_shape_and_total_no_filter(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         # feed 는 COUNT(*) 1행 → rows 목록, 2회 fetch
         conn = _SeqConn([(2,), [("l1", "a1", "ingest.received.v1", "run_ingest", ts),
                                 ("l2", "a9", "ingest.registered.v1", "run_ingest", ts)]])
@@ -75,7 +75,7 @@ class QueryLineageFeedTest(unittest.TestCase):
         self.assertEqual(out["rows"][0]["occurred_at"], ts.isoformat())
 
     def test_order_by_occurred_at_desc_sql(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _SeqConn([(1,), [("l1", "a1", "ingest.received.v1", "run_ingest", ts)]])
         query_lineage_feed(conn)
         # 두 번째 execute(rows 조회)에 시간역순·tiebreak 정렬 SQL 사용 확인
@@ -106,7 +106,7 @@ class QueryLineageFeedTest(unittest.TestCase):
 
 class LineageStatsTest(unittest.TestCase):
     def test_shape_and_no_domain_exclusion(self):
-        d = datetime(2026, 6, 30, tzinfo=timezone.utc).date()
+        d = datetime(2026, 6, 30, tzinfo=UTC).date()
         # COUNT → by_activity → by_day → by_modality → by_status → by_file_ext (6 쿼리)
         conn = _SeqConn([
             (12,),
@@ -131,7 +131,7 @@ class LineageStatsTest(unittest.TestCase):
 
 class LineageTimelineTest(unittest.TestCase):
     def test_single_series_no_group_by(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         out = lineage_timeline(_Conn([(ts, 5)]), interval="day", group_by=None)
         self.assertEqual(out["interval"], "day")
         self.assertEqual(out["buckets"][0]["count"], 5)
@@ -139,12 +139,12 @@ class LineageTimelineTest(unittest.TestCase):
 
     def test_interval_month_passthrough(self):
         # 054 FR-401: month 화이트리스트 추가(프론트 일→월 롤업 서버 이관)
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         out = lineage_timeline(_Conn([(ts, 5)]), interval="month", group_by=None)
         self.assertEqual(out["interval"], "month")
 
     def test_multi_series_group_by_activity(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         # 그룹 행: (key, bucket, count) — key ASC·bucket ASC 정렬 가정
         conn = _Conn([
             ("ingest.received.v1", ts, 3),
@@ -175,7 +175,7 @@ class RelationProposedSummaryTest(unittest.TestCase):
         return _SeqConn([(distinct,), timeline_rows])
 
     def test_shape_distinct_and_timeline(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         out = relation_proposed_summary(self._conn(42, [(ts, 5), (ts, 3)]))
         self.assertEqual(out["distinct_assets"], 42)
         self.assertEqual(out["timeline"]["interval"], "day")
@@ -219,8 +219,8 @@ class RelationProposedSummaryTest(unittest.TestCase):
         self.assertEqual(out["timeline"]["interval"], "day")  # 화이트리스트 폴백(API 는 422 선처리)
 
     def test_period_filter_bound_on_occurred_at(self):
-        dt1 = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        dt2 = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        dt1 = datetime(2026, 6, 1, tzinfo=UTC)
+        dt2 = datetime(2026, 6, 30, tzinfo=UTC)
         conn = self._conn(0, [])
         relation_proposed_summary(conn, since=dt1, until=dt2)
         for sql, params in conn._cur.calls:

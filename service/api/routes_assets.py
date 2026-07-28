@@ -21,7 +21,6 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 from service.api import _infra
-from src.config.filename_util import display_file_name
 from service.portal.asset_detail import fetch_asset_detail
 from service.portal.auth import Principal, require_principal
 from service.portal.download import (
@@ -31,6 +30,7 @@ from service.portal.download import (
     resolve_download_target,
 )
 from service.portal.thumbnail import THUMBNAILABLE_MODALITIES, cached_thumbnail
+from src.config.filename_util import display_file_name
 from src.topic.asset_topic_query import (
     assets_in_topic,
     assets_unclassified,

@@ -6,6 +6,7 @@ registered 자산의 계보 타임라인이 비어있지 않음을 확인한다(
 """
 import os
 import unittest
+from datetime import UTC
 from pathlib import Path
 
 from src.database.ids import uuid7
@@ -21,8 +22,8 @@ class HistoryE2ETest(unittest.TestCase):
         init_settings("dev")
 
     def test_record_then_query_and_stats(self):
-        from src.database.postgres_util import PostgresUtil
         from service.portal.access_log import access_log_stats, query_access_logs, record_access
+        from src.database.postgres_util import PostgresUtil
 
         marker = f"e2e-{uuid7()}"  # 격리용 고유 user_id
         db = PostgresUtil()
@@ -40,8 +41,8 @@ class HistoryE2ETest(unittest.TestCase):
             self.assertTrue(any(r["action"] == "search" for r in stats["by_action"]))
 
     def test_lineage_of_registered_asset(self):
-        from src.database.postgres_util import PostgresUtil
         from service.portal.lineage_query import query_asset_lineage
+        from src.database.postgres_util import PostgresUtil
 
         db = PostgresUtil()
         with db:
@@ -54,9 +55,9 @@ class HistoryE2ETest(unittest.TestCase):
             self.assertTrue(all("activity" in a and "occurred_at" in a for a in acts))
 
     def test_lineage_feed_and_access_timeline(self):
-        from src.database.postgres_util import PostgresUtil
         from service.portal.access_log import access_log_timeline
         from service.portal.lineage_query import query_lineage_feed
+        from src.database.postgres_util import PostgresUtil
 
         db = PostgresUtil()
         with db:
@@ -72,9 +73,9 @@ class HistoryE2ETest(unittest.TestCase):
             self.assertTrue(all("bucket" in b and "count" in b for b in tl["buckets"]))
 
     def test_lineage_stats_and_timeline_multiseries(self):
-        from src.database.postgres_util import PostgresUtil
         from service.portal.access_log import access_log_timeline
         from service.portal.lineage_query import lineage_stats, lineage_timeline
+        from src.database.postgres_util import PostgresUtil
 
         db = PostgresUtil()
         with db:
@@ -94,8 +95,8 @@ class HistoryE2ETest(unittest.TestCase):
             self.assertTrue(all("key" in s for s in at["series"]))
 
     def test_asset_stats_and_list(self):
-        from src.database.postgres_util import PostgresUtil
         from service.portal.asset_stats import asset_stats, query_assets
+        from src.database.postgres_util import PostgresUtil
 
         db = PostgresUtil()
         with db:
@@ -111,13 +112,13 @@ class HistoryE2ETest(unittest.TestCase):
 
     def test_modality_detail_timeline_and_content(self):
         # 보완 v6 — 모달리티 드릴다운·생성 추이·콘텐츠 목록(실 DB)
-        from src.database.postgres_util import PostgresUtil
         from service.portal.asset_stats import (
             asset_stats,
             asset_timeline,
             modality_detail,
             query_assets,
         )
+        from src.database.postgres_util import PostgresUtil
 
         db = PostgresUtil()
         with db:
@@ -143,7 +144,7 @@ class HistoryE2ETest(unittest.TestCase):
             self.assertTrue(all("summary" in r and "keywords" in r for r in lst["rows"]))
             # 🔴 회귀가드(실 PG): with_content + 날짜필터 동시 — created_at 모호성으로 죽지 않아야 함
             from datetime import datetime, timezone
-            wide = datetime(2000, 1, 1, tzinfo=timezone.utc)
+            wide = datetime(2000, 1, 1, tzinfo=UTC)
             dated = db.execute_in_transaction(
                 lambda c: query_assets(c, with_content=True, created_from=wide, limit=3),
                 idempotent=True)

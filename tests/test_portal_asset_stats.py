@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from service.portal.asset_stats import (
     _PROCESSING_STATUSES,
@@ -36,7 +36,7 @@ class _Conn:
 
 class AssetStatsShapeTest(unittest.TestCase):
     def test_stats_shape(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc).date()
+        ts = datetime(2026, 6, 30, tzinfo=UTC).date()
         # COUNT → by_status → by_modality → by_domain → by_file_ext → by_date 순으로 소비(6 쿼리)
         conn = _Conn([
             (10,),
@@ -75,8 +75,8 @@ class AssetStatsShapeTest(unittest.TestCase):
     def test_period_filter_in_all_queries(self):
         # from/to(생성일 기준·to exclusive) — 6개 집계 모두 기간 반영(프론트 ② 기간별 by_file_ext).
         # dt1<dt2 구간으로 호출(공집합 경계 dt==dt 회피)·파라미터 순서는 [since, until].
-        dt1 = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        dt2 = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        dt1 = datetime(2026, 6, 1, tzinfo=UTC)
+        dt2 = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([(0,), [], [], [], [], []])
         asset_stats(conn, since=dt1, until=dt2)
         self.assertEqual(len(conn._cur.calls), 6)
@@ -148,8 +148,8 @@ class AssetStatsSnapshotBucketsTest(unittest.TestCase):
 
     def test_filter_query_period_binding_order(self):
         # 기간 지정 시 params = [activity, since, until] (SELECT EXISTS 먼저, WHERE 기간 뒤)
-        dt1 = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        dt2 = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        dt1 = datetime(2026, 6, 1, tzinfo=UTC)
+        dt2 = datetime(2026, 6, 30, tzinfo=UTC)
         conn = self._conn_with_buckets(20, (3, 2, 10, 1, 4))
         asset_stats(conn, since=dt1, until=dt2, snapshot_buckets=True)
         filter_sql, filter_params = conn._cur.calls[6]
@@ -170,7 +170,7 @@ class AssetStatsSnapshotBucketsTest(unittest.TestCase):
 
 class QueryAssetsShapeTest(unittest.TestCase):
     def test_rows_shape_and_basename(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([
             (2,),
             [
@@ -201,7 +201,7 @@ class QueryAssetsShapeTest(unittest.TestCase):
     def test_rows_include_file_ext_from_by_file_ext_logic(self):
         # FR-104(057): 목록 행에 file_ext 하향(하위호환) — by_file_ext 집계와 동일 SQL(_EXT_EXPR) 파생
         # 이라 행의 file_ext == 집계 버킷 키(프론트 파일명 파싱·폴백 확장자 집계 제거).
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([
             (2,),
             [
@@ -239,7 +239,7 @@ class QueryAssetsShapeTest(unittest.TestCase):
         self.assertEqual(select_params, ["registered", "text", "general", 50, 0])
 
     def test_file_ext_and_date_filters(self):
-        dt = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        dt = datetime(2026, 6, 1, tzinfo=UTC)
         conn = _Conn([(0,), []])
         query_assets(conn, file_ext="pdf", created_from=dt)
         count_sql, count_params = conn._cur.calls[0]
@@ -275,7 +275,7 @@ class QueryAssetsShapeTest(unittest.TestCase):
 class QueryAssetsContentTest(unittest.TestCase):
     """with_content=True — 모달리티 상세 목록에 요약·키워드·제목(파일명) 동반(보완 v6)."""
     def test_with_content_joins_metadata_and_adds_fields(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([
             (1,),
             [("a1", "registered", "video", "general", "/data/raw/뉴스.mp4", ts,
@@ -295,7 +295,7 @@ class QueryAssetsContentTest(unittest.TestCase):
         self.assertIn("ORDER BY a.created_at DESC, a.asset_id DESC", select_sql)
 
     def test_without_content_keeps_lean_shape(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([(1,), [("a1", "registered", "text", "general", "/d/x.txt", ts, "txt")]])
         out = query_assets(conn)  # 기본 with_content=False — 하위호환(요약/키워드 없음)
         self.assertNotIn("summary", out["rows"][0])
@@ -312,7 +312,7 @@ class QueryAssetsContentTest(unittest.TestCase):
     def test_with_content_with_date_qualifies_created_at(self):
         # 🔴 회귀 가드: with_content JOIN + 날짜 필터 시 created_at 모호성(asset·asset_metadata 양쪽 보유)
         # → content SELECT 는 a. 한정해야 PG 오류 없음. 2026-07-23: COUNT·경량목록도 asset a 별칭 통일(a. 한정).
-        dt = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        dt = datetime(2026, 1, 1, tzinfo=UTC)
         conn = _Conn([(0,), []])
         query_assets(conn, with_content=True, created_from=dt, created_to=dt)
         count_sql, select_sql = conn._cur.calls[0][0], conn._cur.calls[1][0]
@@ -412,8 +412,8 @@ class QueryAssetsSnapshotBucketTest(unittest.TestCase):
     """054 G1 — query_assets snapshot_bucket 통합(C3: 버킷 우선·하위호환)."""
 
     def test_relation_proposed_bucket_sql(self):
-        dtx = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        dty = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        dtx = datetime(2026, 6, 1, tzinfo=UTC)
+        dty = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([(0,), []])
         # status 를 함께 줘도 snapshot_bucket 이 우선(C3) — status 스펙은 추가되지 않음
         query_assets(conn, snapshot_bucket="relation_proposed",
@@ -442,8 +442,8 @@ class QueryAssetsSnapshotBucketTest(unittest.TestCase):
 
     def test_relation_scope_default_is_period(self):
         # relation_scope 미지정 기본 'period' — 기간 있으면 occurred_at 스코프
-        dtx = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        dty = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        dtx = datetime(2026, 6, 1, tzinfo=UTC)
+        dty = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([(0,), []])
         query_assets(conn, snapshot_bucket="relation_proposed",
                      created_from=dtx, created_to=dty)
@@ -451,8 +451,8 @@ class QueryAssetsSnapshotBucketTest(unittest.TestCase):
         self.assertIn("l.occurred_at >= %s", count_sql)
 
     def test_relation_scope_alltime_drops_occurred_range(self):
-        dtx = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        dty = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        dtx = datetime(2026, 6, 1, tzinfo=UTC)
+        dty = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([(0,), []])
         query_assets(conn, snapshot_bucket="relation_proposed",
                      relation_scope="alltime", created_from=dtx, created_to=dty)
@@ -484,7 +484,7 @@ class QueryAssetsSnapshotBucketTest(unittest.TestCase):
 class ModalityDetailTest(unittest.TestCase):
     """단일 모달리티 스코프 집계(보완 v6) — 확장자·상태·일자 + 총계(도메인 제외 없음)."""
     def test_shape_and_modality_bound(self):
-        d = datetime(2026, 6, 30, tzinfo=timezone.utc).date()
+        d = datetime(2026, 6, 30, tzinfo=UTC).date()
         # COUNT → by_file_ext → by_status → by_date 순(4 쿼리)
         conn = _Conn([
             (9,),
@@ -514,8 +514,8 @@ class ModalityDetailTest(unittest.TestCase):
 
     def test_period_filter(self):
         # 모달리티 드릴다운도 기간 필터(개요 from/to 와 일관·프론트 ② "모달리티 기간 조회").
-        dt1 = datetime(2026, 6, 1, tzinfo=timezone.utc)
-        dt2 = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        dt1 = datetime(2026, 6, 1, tzinfo=UTC)
+        dt2 = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([(0,), [], [], []])
         modality_detail(conn, "video", since=dt1, until=dt2)
         for sql, params in conn._cur.calls:
@@ -527,7 +527,7 @@ class ModalityDetailTest(unittest.TestCase):
 class AssetTimelineTest(unittest.TestCase):
     """자산 생성 일자 추이(보완 v6) — group_by 멀티시리즈(계보 timeline 과 동일 패턴)."""
     def test_single_series_default(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([[(ts, 5)]])
         out = asset_timeline(conn, interval="day")
         self.assertEqual(out["interval"], "day")
@@ -536,7 +536,7 @@ class AssetTimelineTest(unittest.TestCase):
         self.assertNotIn("medical", conn._cur.calls[0][0])  # 2026-07-23: 도메인 제외 전면 제거
 
     def test_group_by_modality_multiseries(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([[("image", ts, 4), ("video", ts, 2)]])
         out = asset_timeline(conn, group_by="modality")
         self.assertEqual(out["group_by"], "modality")
@@ -554,7 +554,7 @@ class AssetTimelineTest(unittest.TestCase):
 
     def test_group_by_file_ext_uses_ext_expr(self):
         # 프론트 ③ 일별 파일 포맷 추이 — group_by=file_ext 면 확장자식이 시리즈 key
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         conn = _Conn([[("pdf", ts, 3), ("txt", ts, 1)]])
         out = asset_timeline(conn, group_by="file_ext")
         self.assertEqual(out["group_by"], "file_ext")
@@ -596,7 +596,7 @@ class BuildModalityOverviewTest(unittest.TestCase):
     """057 FR-302 — 모달리티 현황 BFF(modality_detail + asset_timeline + first-page 를 한 트랜잭션 조합)."""
 
     def test_overview_combines_three_slices(self):
-        ts = datetime(2026, 6, 30, tzinfo=timezone.utc)
+        ts = datetime(2026, 6, 30, tzinfo=UTC)
         d = ts.date()
         # 순서: modality_detail(COUNT→by_file_ext→by_status→by_date=4쿼리)
         #      → asset_timeline(단일 execute·1)
