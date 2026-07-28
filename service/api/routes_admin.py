@@ -191,7 +191,7 @@ def asset_stats_endpoint(
     from_: str | None = Query(None, alias="from", description="생성일 하한(YYYY-MM-DD 또는 ISO)"),
     to: str | None = Query(None, alias="to", description="생성일 상한(exclusive)"),
     snapshot_buckets: bool = Query(
-        False, description="운영 5버킷 집계(by_snapshot_bucket) 동반(계보 현황 화면·054·FR-201/202)"),
+        False, description="운영 5버킷 집계(by_snapshot_bucket) 동반(계보 현황 화면)"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
     """전체 자산을 여러 기준으로 집계한다 — 상태·모달리티·도메인·확장자·날짜별과 총계.
@@ -215,7 +215,7 @@ def assets_list(
     created_to: str | None = Query(None, description="생성일 상한"),
     snapshot_bucket: str | None = Query(
         None, description="운영 스냅샷 버킷 필터(processing/deferred/registered/failed/"
-                          "relation_proposed·054). 지정 시 status 대신 버킷으로 롤업 필터(C3)"),
+                          "relation_proposed). 지정 시 status 대신 이 버킷으로 롤업 필터"),
     relation_scope: str = Query(
         "period", description="relation_proposed/registered 관계 제안 판별 스코프: "
                              "period(기본·자산 created 기간) | alltime(전 기간)"),
@@ -328,7 +328,7 @@ def admin_asset_detail(
 def dashboard_summary_endpoint(
     months: int = Query(6, ge=1, le=24, description="월별 시계열 창(개월·기본 6·최대 24)"),
     monthly_interval: str = Query(
-        "day", description="월별 슬라이스 버킷 단위: day(기본·하위호환) | month(057 FR-303·프론트 롤업 제거)"),
+        "day", description="월별 슬라이스 버킷 단위: day(기본) | month"),
     principal: Annotated[Principal, Depends(require_principal)] = ...,
 ) -> dict[str, Any]:
     """운영 대시보드가 필요한 것을 **한 번에** 돌려준다 — 접근·계보·자산 세 영역 ×
@@ -370,7 +370,7 @@ def relations_list(
     offset: int = Query(0, ge=0),
     q: str | None = Query(
         None, max_length=200,
-        description="통합 텍스트 검색(edge_id·asset_id·파일명·reason·topic·최대 200자·FR-702)"),
+        description="통합 텍스트 검색(edge_id·asset_id·파일명·reason·topic·최대 200자)"),
     asset_id: str | None = Query(None, description="양끝 중 하나 정확 일치"),
     kind_code: str | None = Query(None, description="관계종류 코드 정확 일치"),
     modality: str | None = Query(None, description="양끝 중 하나 모달리티"),

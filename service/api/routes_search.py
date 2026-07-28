@@ -283,10 +283,10 @@ def search(
     file_ext: list[str] | None = Query(None, description="파일 확장자 필터(반복 가능, 예: txt,pdf)"),
     created_from: str | None = Query(None, description="생성일 하한(YYYY-MM-DD 또는 ISO datetime, UTC)"),
     created_to: str | None = Query(None, description="생성일 상한(YYYY-MM-DD 또는 ISO datetime, UTC)"),
-    topic: str | None = Query(None, description="주제(topic) 정확 일치 필터(056·keyword terms)"),
-    subtopic: str | None = Query(None, description="세부주제(subtopic) 정확 일치 필터(056·keyword terms)"),
+    topic: str | None = Query(None, description="주제(topic) 정확 일치 필터"),
+    subtopic: str | None = Query(None, description="세부주제(subtopic) 정확 일치 필터"),
     no_cutoff: bool = Query(
-        False, description="true 면 모달리티별 적합도 컷오프를 무시(약한 매칭까지 노출·027 디버그·기본 off)"
+        False, description="true 면 모달리티별 적합도 컷오프를 무시(약한 매칭까지 노출·디버그용·기본 off)"
     ),
     compact: bool = Query(
         False,
