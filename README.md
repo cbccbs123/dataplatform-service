@@ -114,11 +114,12 @@ JWT 는 HS256 이고 `exp`·`sub` 를 필수로 검증합니다. `PORTAL_JWT_ISS
 ## 실행
 
 ```bash
+set -a; . ./.env.dev; set +a                          # 설정을 환경으로 올린다
 uvicorn service.api:app --host 127.0.0.1 --port 8001
-# 또는
-./run.sh start        # pid·로그 관리 · 중복 기동 방지 · 기동 직후 생존 확인
-./run.sh status       # 중지: stop · 재기동: restart · 포트 변경: BACKEND_PORT=8000 ./run.sh start
 ```
+
+백그라운드로 돌리고 pid·로그를 관리하려면 프로세스 매니저(systemd·supervisor 등)를 쓰거나
+간단히 `nohup … &` 로 띄우십시오.
 
 > ⚠️ `--host 0.0.0.0` 은 모든 네트워크 인터페이스에 노출됩니다. 신뢰된 네트워크가 아니면
 > 리버스 프록시 뒤에 두고 인증을 활성화(`PORTAL_AUTH_DISABLED=0`)하십시오.
@@ -150,7 +151,6 @@ service/
   portal/       검색 조립·자산 조회·다운로드·썸네일·인증/권한
   bootstrap.py  설정 로드·초기화
 tests/          단위 테스트
-run.sh          네이티브 실행 제어(start|stop|restart|status)
 ```
 
 ## 설계 제약
