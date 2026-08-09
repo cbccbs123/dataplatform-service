@@ -44,7 +44,7 @@ _REGISTERED_ROW = {
     "tags": ["report", "2026"],
 }
 
-# 081 T009 — 관계 노출 하한을 **명시 주입**한다.
+# 관계 노출 하한을 **명시 주입**한다.
 # 운영 경로는 설정(`RELATION_PERSIST_MIN_CONF_SIMILARITY`)에서 읽지만 이 파일은 설정 초기화
 # 없이 도는 **순수 단위 테스트**라, 값을 안 주면 `get_current_settings()` 가 RuntimeError 를 낸다.
 # ⚠️ 값 자체는 여기서 의미가 없다 — 관계 조회를 통째로 mock 하므로 그대로 통과할 뿐이다.
@@ -57,7 +57,7 @@ _RELATIONS = [
         "topic": {"topic_ko": "사진"}, "reason": "유사", "edge_id": "e1",
         # FR-102(057·G1): 이웃 표시필드는 이미 엣지 dict 에 내려온다(재조회 0). 병합 시 이웃 레벨로 승격.
         "file_name": "b2.jpg", "modality": "image",
-        # 081 T009: 코어가 붙여 보내는 노출 등급·접힘. 백엔드는 재계산 없이 통과만 한다.
+        # 코어가 붙여 보내는 노출 등급·접힘. 백엔드는 재계산 없이 통과만 한다.
         "tier": "strong", "folded_kind_codes": [],
     },
 ]
@@ -146,9 +146,11 @@ class TestFetchAssetDetail(unittest.TestCase):
         from service.portal.asset_detail import fetch_asset_detail
         from src.registry.access_tier import AUTHORIZED, PUBLIC
 
-        anon = fetch_asset_detail(conn, asset_id="A1", clearance=PUBLIC, min_conf_similarity=_TEST_MIN_CONF)
+        anon = fetch_asset_detail(
+            conn, asset_id="A1", clearance=PUBLIC, min_conf_similarity=_TEST_MIN_CONF)
         self.assertEqual(anon["ext_meta"], {})
-        auth = fetch_asset_detail(conn, asset_id="A1", clearance=AUTHORIZED, min_conf_similarity=_TEST_MIN_CONF)
+        auth = fetch_asset_detail(
+            conn, asset_id="A1", clearance=AUTHORIZED, min_conf_similarity=_TEST_MIN_CONF)
         self.assertEqual(auth["ext_meta"], {"summary": "요약", "stt": "전문"})
 
     @patch("service.portal.asset_detail.fetch_relations_for_asset")
@@ -177,7 +179,7 @@ class TestFetchAssetDetail(unittest.TestCase):
         from service.portal.asset_detail import fetch_asset_detail
 
         out = fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)
-        # 081 T009 — **확인 전(`proposed`)까지 읽는다**(`include_weak=True`). 자동승인 폐지 후
+        # **확인 전(`proposed`)까지 읽는다**(`include_weak=True`). 자동승인 폐지 후
         # `active` 가 0건이라 이 인자가 없으면 화면 관계가 통째로 빈다. 하한은 영속화 게이트와
         # 같은 값을 써야 하므로 설정에서 읽는다(테스트는 명시 주입).
         mock_rel.assert_called_once_with(
@@ -196,7 +198,7 @@ class TestFetchAssetDetail(unittest.TestCase):
                 "edge_id": "e1", "kind_code": "duplicate_near", "confidence": 0.9,
                 "direction": "undirected", "is_symmetric": True,
                 "topic": {"topic_ko": "사진"}, "reason": "유사",
-                # 081 T009 추가분 — 코어가 계산한 노출 등급과 접힌 종류를 그대로 통과시킨다.
+                # 코어가 계산한 노출 등급과 접힌 종류를 그대로 통과시킨다.
                 "tier": "strong", "folded_kind_codes": [],
             }],
         )
@@ -211,7 +213,8 @@ class TestFetchAssetDetail(unittest.TestCase):
         conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
         from service.portal.asset_detail import fetch_asset_detail
 
-        rels = fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
+        rels = fetch_asset_detail(
+            conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
         # 3 엣지 → 이웃 2행(B2 2엣지 병합). 정렬: A0(max 0.95) → B2(max 0.9).
         self.assertEqual([n["asset_id"] for n in rels], ["A0", "B2"])
         b2 = rels[1]
@@ -221,7 +224,7 @@ class TestFetchAssetDetail(unittest.TestCase):
         self.assertEqual(b2["file_name"], "b2.jpg")
         self.assertEqual(b2["modality"], "image")
         # 엣지 dict 은 정확히 9개 상세 키 — asset_id/file_name/modality/status 는 이웃 레벨로 승격.
-        # 081 T009 에서 `tier`·`folded_kind_codes` 를 **추가**했다(기존 7키 불변 · 하위호환).
+        # 노출 확장에서 `tier`·`folded_kind_codes` 를 **추가**했다(기존 7키 불변 · 하위호환).
         # 이 둘을 빼면 코어가 계산한 노출 등급과 접힌 사실이 백엔드에서 버려진다.
         self.assertEqual(
             set(b2["edges"][0].keys()),
@@ -251,7 +254,8 @@ class TestFetchAssetDetail(unittest.TestCase):
         conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
         from service.portal.asset_detail import fetch_asset_detail
 
-        rels = fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
+        rels = fetch_asset_detail(
+            conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
         # 0.5 동점(M5,Z9)은 asset_id asc → M5,Z9. confidence None(N0)은 최후.
         self.assertEqual([n["asset_id"] for n in rels], ["M5", "Z9", "N0"])
         self.assertIsNone(rels[2]["max_confidence"])  # 모든 엣지 None → max_confidence None
@@ -263,7 +267,8 @@ class TestFetchAssetDetail(unittest.TestCase):
         conn, _ = _conn_for_detail(None, [])
         from service.portal.asset_detail import fetch_asset_detail
 
-        self.assertIsNone(fetch_asset_detail(conn, asset_id="ZZ", min_conf_similarity=_TEST_MIN_CONF))
+        self.assertIsNone(
+            fetch_asset_detail(conn, asset_id="ZZ", min_conf_similarity=_TEST_MIN_CONF))
 
     @patch("service.portal.asset_detail.fetch_relations_for_asset")
     def test_non_registered_returns_none(self, mock_rel) -> None:
@@ -274,7 +279,8 @@ class TestFetchAssetDetail(unittest.TestCase):
         conn, _ = _conn_for_detail(row, [])
         from service.portal.asset_detail import fetch_asset_detail
 
-        self.assertIsNone(fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF))
+        self.assertIsNone(
+            fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF))
 
     @patch("service.portal.asset_detail.fetch_relations_for_asset")
     def test_medical_returns_detail(self, mock_rel) -> None:
@@ -311,12 +317,12 @@ def _edge(aid: str, tier: str, conf: float, edge_id: str, kind: str = "same_doma
 
 
 class TestRelationTierOrdering(unittest.TestCase):
-    """081 T009 — **등급이 신뢰도보다 앞선다**(2026-08-07 발견한 결함의 봉인).
+    """**등급이 신뢰도보다 앞선다**(2026-08-07 발견한 결함의 봉인).
 
     코어 `graph_query` 는 강칸을 먼저 오도록 정렬해 넘기는데, 백엔드가 마지막에
     `max_confidence` 로 **다시 정렬해 그 순서를 뭉개고 있었다.** 그러면 고신뢰 약칸
     ("참고 자료")이 저신뢰 강칸("연관 자료")을 밀어내 **사람이 확인해 준 관계가 아래로
-    내려간다** — 081 이 2단 노출을 만든 목적과 정반대다.
+    내려간다** — 2단 노출을 만든 목적과 정반대다.
 
     ⚠️ 그때까지 `active` 가 0건이라 **증상이 드러나지 않았다.** 화면을 켜는 순간
     바로 나타났을 결함이므로, 신뢰도만 보는 정렬로 되돌아가지 못하게 여기서 못 박는다.
@@ -331,7 +337,8 @@ class TestRelationTierOrdering(unittest.TestCase):
             _edge("S1", "strong", 0.71, "s1"),  # 사람이 확인해 준 것
         ]
         conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
-        rels = fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
+        rels = fetch_asset_detail(
+            conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
         self.assertEqual([n["asset_id"] for n in rels], ["S1", "W9"],
                          "확인된 관계가 고신뢰 미확인 관계에 밀렸다")
 
@@ -345,7 +352,8 @@ class TestRelationTierOrdering(unittest.TestCase):
             _edge("A", "weak", 0.95, "e1"),
         ]
         conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
-        rels = fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
+        rels = fetch_asset_detail(
+            conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
         self.assertEqual([n["asset_id"] for n in rels], ["A", "B"])
 
     @patch("service.portal.asset_detail.fetch_relations_for_asset")
@@ -358,8 +366,64 @@ class TestRelationTierOrdering(unittest.TestCase):
             del r["tier"]
         mock_rel.return_value = rows
         conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
-        rels = fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
+        rels = fetch_asset_detail(
+            conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
         self.assertEqual([n["asset_id"] for n in rels], ["A", "B"])
+
+
+class TestMinConfSettingsFallback(unittest.TestCase):
+    """운영 경로 검증 — 하한을 안 넘기면 **설정에서 읽어** 코어 조회에 그대로 전달한다.
+
+    실제 라우트는 전부 이 폴백을 탄다(하한을 명시하지 않는다). 다른 테스트들은 전부
+    명시 주입이라 이 분기를 우회하므로, 여기서 설정을 mock 해 한 번은 실제로 태운다.
+    """
+
+    @patch("service.portal.asset_detail.get_current_settings")
+    @patch("service.portal.asset_detail.fetch_relations_for_asset")
+    def test_하한을_안_넘기면_설정값이_코어_조회로_전달된다(self, mock_rel, mock_settings) -> None:
+        mock_settings.return_value.relations.persist_min_conf_similarity = 0.42
+        mock_rel.return_value = []
+        conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
+        from service.portal.asset_detail import fetch_asset_detail
+
+        fetch_asset_detail(conn, asset_id="A1")   # min_conf_similarity 미지정 = 운영 경로
+        mock_rel.assert_called_once_with(
+            conn, asset_id="A1", include_weak=True, min_conf_similarity=0.42)
+
+    @patch("service.portal.asset_detail.get_current_settings")
+    @patch("service.portal.asset_detail.fetch_relations_for_asset")
+    def test_하한을_명시하면_설정을_읽지_않는다(self, mock_rel, mock_settings) -> None:
+        # 명시 주입(테스트 경로)이 설정 초기화 없이도 돌아야 한다는 계약 자체를 봉인.
+        mock_rel.return_value = []
+        conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
+        from service.portal.asset_detail import fetch_asset_detail
+
+        fetch_asset_detail(conn, asset_id="A1", min_conf_similarity=0.7)
+        mock_settings.assert_not_called()
+
+
+class TestNeighborTierPromotion(unittest.TestCase):
+    """이웃당 엣지가 여러 건이고 등급이 섞이면 **우선순위 높은 등급**으로 승격한다.
+
+    지금은 코어가 이웃당 1행으로 접어 보내 이 분기가 실행되지 않지만, 접기가 꺼지거나
+    계약이 바뀌어도 확인된 관계(강칸)가 약칸 하나 때문에 밀리지 않게 방어한다 — 그
+    방어가 실제로 작동하는지 한 번은 직접 때려 본다.
+    """
+
+    @patch("service.portal.asset_detail.fetch_relations_for_asset")
+    def test_등급이_섞인_이웃은_strong_으로_승격된다(self, mock_rel) -> None:
+        from service.portal.asset_detail import fetch_asset_detail
+
+        mock_rel.return_value = [
+            _edge("B2", "weak", 0.95, "e1", kind="same_domain"),
+            _edge("B2", "strong", 0.70, "e2", kind="duplicate_near"),
+        ]
+        conn, _ = _conn_for_detail(dict(_REGISTERED_ROW), [])
+        rels = fetch_asset_detail(
+            conn, asset_id="A1", min_conf_similarity=_TEST_MIN_CONF)["relations"]
+        self.assertEqual(len(rels), 1)
+        self.assertEqual(rels[0]["tier"], "strong",
+                         "약칸 엣지 하나 때문에 확인된 관계의 등급이 내려가면 안 된다")
 
 
 if __name__ == "__main__":

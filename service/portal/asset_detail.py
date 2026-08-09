@@ -129,9 +129,10 @@ def _merge_relations_by_asset(neighbor_edges: list[dict[str, Any]]) -> list[dict
         edges.sort(key=lambda ed: (_conf_sort_key(ed["confidence"]), str(ed["edge_id"])))
         # 값이 없는 엣지를 섞으면 max() 가 터진다 — 수치만 골라 낸다.
         numeric = [ed["confidence"] for ed in edges if isinstance(ed["confidence"], (int, float))]
-        # 이웃의 등급 = 그 이웃에 붙은 엣지 중 **가장 높은 것**. 코어가 이웃당 하나로 접어
-        # 보내므로 보통 엣지는 1건이지만, 접기가 꺼지거나 계약이 바뀌어도 강칸을 잃지 않게
-        # 최댓값을 쓴다(약칸 하나 때문에 확인된 관계가 아래로 밀리면 안 된다).
+        # 이웃의 등급 = 그 이웃에 붙은 엣지 중 **우선순위가 가장 높은 등급**(strong 이 rank 0
+        # 이라 min() 으로 고른다 — max 가 아니다). 코어가 이웃당 하나로 접어 보내므로 보통
+        # 엣지는 1건이지만, 접기가 꺼지거나 계약이 바뀌어도 강칸을 잃지 않게 방어한다
+        # (약칸 하나 때문에 확인된 관계가 아래로 밀리면 안 된다).
         tier = min((str(ed.get("tier") or "") for ed in edges),
                    key=lambda t: _TIER_RANK.get(t, len(_TIER_RANK)), default="")
         merged.append(
